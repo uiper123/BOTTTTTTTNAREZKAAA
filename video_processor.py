@@ -12,6 +12,7 @@ import torch
 from google_drive_uploader import GoogleDriveUploader
 from video_editor import VideoEditor
 import math
+import time
 
 class VideoProcessor:
     def __init__(self):
@@ -33,8 +34,20 @@ class VideoProcessor:
          
     async def process_video(self, video_path, duration, title, subtitle, user_id):
         """Основная функция обработки видео с выбором стратегии (параллельно/последовательно)"""
-        temp_dir = f"temp_{user_id}"
+        # Создаем временную директорию с абсолютным путем
+        base_temp_dir = tempfile.gettempdir()
+        temp_dir = os.path.join(base_temp_dir, f"video_processing_{user_id}_{int(time.time())}")
+        
         try:
+            os.makedirs(temp_dir, exist_ok=True)
+            print(f"🗂️ Создана временная директория: {temp_dir}")
+
+            # Для локальных файлов, скопируем его во временную папку, чтобы избежать проблем с путями
+            if not video_path.startswith(('http', '/tmp')): # Простой чек, что это не URL и не из Colab
+                local_video_path = os.path.join(temp_dir, os.path.basename(video_path))
+                shutil.copy2(video_path, local_video_path)
+                video_path = local_video_path
+
             video_info = self._get_video_info(video_path)
             video_duration = video_info['duration']
             print(f"🎬 Обрабатываем видео длительностью {video_duration:.1f} секунд")

@@ -1,6 +1,7 @@
 import os
 import pickle
 import base64
+import json
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from google.oauth2.credentials import Credentials
@@ -12,31 +13,30 @@ load_dotenv()
 
 class GoogleDriveUploader:
     def __init__(self):
-        self.service = self._authenticate()
-        
-    def _authenticate(self):
-        """Аутентификация в Google Drive API"""
+        """Инициализация и аутентификация."""
+        self.creds = None  # Всегда инициализируем creds
         try:
-            # Декодируем токен из base64
+            load_dotenv()
             token_base64 = os.getenv('GOOGLE_OAUTH_TOKEN_BASE64')
             if not token_base64:
-                raise Exception("GOOGLE_OAUTH_TOKEN_BASE64 не найден в переменных окружения")
+                raise ValueError("Переменная окружения GOOGLE_OAUTH_TOKEN_BASE64 не найдена.")
+
+            token_json = base64.b64decode(token_base64).decode('utf-8')
+            creds_info = json.loads(token_json)
             
-            # Декодируем и загружаем credentials
-            token_data = base64.b64decode(token_base64)
-            credentials = pickle.loads(token_data)
-            
-            # Обновляем токен если необходимо
-            if credentials.expired and credentials.refresh_token:
-                credentials.refresh(Request())
-            
-            # Создаем сервис
-            service = build('drive', 'v3', credentials=credentials)
-            return service
-            
+            self.creds = Credentials.from_authorized_user_info(creds_info, ['https://www.googleapis.com/auth/drive.file'])
+
+            if not self.creds.valid:
+                if self.creds.expired and self.creds.refresh_token:
+                    print("Токен Google истек, обновляем...")
+                    self.creds.refresh(Request())
+                else:
+                    # Этот блок не должен выполняться в автоматическом режиме
+                    print("Требуется повторная аутентификация Google.")
+                    self.creds = None # Сбрасываем, если не удалось обновить
         except Exception as e:
-            print(f"Ошибка аутентификации Google Drive: {e}")
-            raise
+            print(f"❌ Ошибка при инициализации GoogleDriveUploader: {e}")
+            self.creds = None # Убедимся, что creds None в случае любой ошибки
     
     def upload_file(self, file_path, file_name):
         """Загружает файл на Google Drive и возвращает ссылку."""
