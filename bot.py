@@ -198,7 +198,7 @@ class TelegramBot:
         await update.message.reply_text("🔄 Начинаю обработку YouTube видео...")
         
         try:
-            # Запускаем обработку видео
+            # Запускаем обработку видео (автоматически использует cookies если доступны)
             result = await self.video_processor.process_youtube_video(url, config)
             
             if result['success']:

@@ -301,4 +301,22 @@ class YouTubeDownloader:
             logger.warning(f"Файл cookies не найден: {cookies_file}")
             return self.download(url, use_cookies=False)
         
-        return self.download(url, use_cookies=True)
+        # Проверяем что cookies файл не пустой
+        try:
+            with open(cookies_file, 'r', encoding='utf-8') as f:
+                content = f.read().strip()
+                if not content or content == '# No cookies':
+                    logger.info("Cookies файл пустой, скачиваем без cookies")
+                    return self.download(url, use_cookies=False)
+                
+                # Проверяем наличие YouTube cookies
+                if 'youtube.com' in content or 'google.com' in content:
+                    logger.info("Найдены YouTube cookies, используем их для скачивания")
+                    return self.download(url, use_cookies=True)
+                else:
+                    logger.warning("YouTube cookies не найдены в файле")
+                    return self.download(url, use_cookies=False)
+                    
+        except Exception as e:
+            logger.error(f"Ошибка чтения cookies файла: {e}")
+            return self.download(url, use_cookies=False)

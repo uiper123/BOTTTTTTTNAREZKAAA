@@ -25,9 +25,9 @@ class VideoProcessor:
     async def process_youtube_video(self, url: str, config: dict) -> dict:
         """Обработка YouTube видео"""
         try:
-            # 1. Скачиваем видео
+            # 1. Скачиваем видео (автоматически использует cookies если доступны)
             logger.info(f"Скачивание YouTube видео: {url}")
-            download_result = await self.youtube_downloader.download(url)
+            download_result = await self.youtube_downloader.download_with_cookies(url)
             
             if not download_result['success']:
                 return {'success': False, 'error': download_result['error']}
