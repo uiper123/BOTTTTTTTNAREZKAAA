@@ -305,11 +305,18 @@ class VideoProcessor:
                 
                 clip_duration = actual_duration if total_duration <= duration else duration
                 
-                # Получаем субтитры для этого временного отрезка
-                clip_subtitles = [
-                    seg for seg in subtitles 
-                    if seg['start'] >= start_time and seg['end'] <= start_time + clip_duration
-                ]
+                # ИСПРАВЛЕНИЕ: Правильно фильтруем субтитры для клипа
+                absolute_start_time = start_time
+                absolute_end_time = start_time + clip_duration
+                
+                # Получаем субтитры, которые пересекаются с временным отрезком клипа
+                clip_subtitles = []
+                for seg in subtitles:
+                    # Проверяем пересечение временных интервалов
+                    if seg['end'] > absolute_start_time and seg['start'] < absolute_end_time:
+                        clip_subtitles.append(seg)
+                
+                print(f"   📝 Найдено {len(clip_subtitles)} субтитров для клипа {i+1}")
                 
                 task = self._create_single_clip_async(
                     video_path, clip_path, start_time, clip_duration,
@@ -399,11 +406,18 @@ class VideoProcessor:
                 
                 print(f"Создаем клип {i+1}/{clip_count}, начало: {start_time}с, длительность: {clip_duration}с")
                 
-                # Получаем субтитры для этого временного отрезка
-                clip_subtitles = [
-                    seg for seg in subtitles 
-                    if seg['start'] >= start_time and seg['end'] <= start_time + clip_duration
-                ]
+                # ИСПРАВЛЕНИЕ: Правильно фильтруем субтитры для клипа
+                absolute_start_time = start_time
+                absolute_end_time = start_time + clip_duration
+                
+                # Получаем субтитры, которые пересекаются с временным отрезком клипа
+                clip_subtitles = []
+                for seg in subtitles:
+                    # Проверяем пересечение временных интервалов
+                    if seg['end'] > absolute_start_time and seg['start'] < absolute_end_time:
+                        clip_subtitles.append(seg)
+                
+                print(f"   📝 Найдено {len(clip_subtitles)} субтитров для клипа {i+1}")
                 
                 # Создаем клип с эффектами
                 success = await self.video_editor.create_clip(
