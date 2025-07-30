@@ -185,20 +185,48 @@ class VideoProcessor:
             return [video_path]  # Возвращаем оригинальный файл
     
     async def _create_chunk_ultra_fast(self, task: dict) -> bool:
-        """СУПЕР БЫСТРОЕ создание чанка прямыми командами ffmpeg (как в вашем примере)"""
+        """СУПЕР БЫСТРОЕ создание чанка с таймаутом и fallback"""
         try:
             loop = asyncio.get_event_loop()
-            await loop.run_in_executor(
-                None,
-                self._create_chunk_direct_command,
-                task['input_path'],
-                task['output_path'], 
-                task['start_time'],
-                task['duration']
+            
+            # Добавляем таймаут 60 секунд для каждого чанка
+            await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    self._create_chunk_direct_command,
+                    task['input_path'],
+                    task['output_path'], 
+                    task['start_time'],
+                    task['duration']
+                ),
+                timeout=60.0  # 60 секунд таймаут
             )
             return True
+            
+        except asyncio.TimeoutError:
+            logger.warning(f"⏰ Таймаут создания чанка {task['index']}, пробуем CPU fallback")
+            # Пробуем CPU fallback
+            try:
+                loop = asyncio.get_event_loop()
+                await asyncio.wait_for(
+                    loop.run_in_executor(
+                        None,
+                        self._create_chunk_cpu_fallback,
+                        task['input_path'],
+                        task['output_path'], 
+                        task['start_time'],
+                        task['duration']
+                    ),
+                    timeout=120.0  # 2 минуты для CPU
+                )
+                logger.info(f"✅ Чанк {task['index']} создан через CPU fallback")
+                return True
+            except Exception as fallback_error:
+                logger.error(f"❌ CPU fallback тоже не сработал для чанка {task['index']}: {fallback_error}")
+                return False
+                
         except Exception as e:
-            logger.error(f"Ошибка создания чанка {task['index']}: {e}")
+            logger.error(f"❌ Ошибка создания чанка {task['index']}: {e}")
             return False
     
     def _create_chunk_direct_command(self, input_path: str, output_path: str, start_time: int, duration: int):

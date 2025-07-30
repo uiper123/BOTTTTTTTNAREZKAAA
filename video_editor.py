@@ -152,20 +152,9 @@ class VideoEditor:
         # Проверяем доступность GPU
         gpu_available = self._check_gpu_support()
         
-        if gpu_available:
-            # GPU ускоренный ввод
-            main_video = ffmpeg.input(
-                input_path, 
-                ss=start_time, 
-                t=duration,
-                hwaccel='cuda',
-                hwaccel_output_format='cuda'
-            )
-            logger.info(f"🎮 Используем GPU для создания клипа {clip_number}")
-        else:
-            # Обычный CPU ввод
-            main_video = ffmpeg.input(input_path, ss=start_time, t=duration)
-            logger.info(f"💻 Используем CPU для создания клипа {clip_number}")
+        # Всегда используем CPU ввод для стабильности в Colab
+        main_video = ffmpeg.input(input_path, ss=start_time, t=duration)
+        logger.info(f"💻 Используем CPU для создания клипа {clip_number}")
         
         # Создаем размытый фон (растягиваем на весь экран)
         blurred_bg = (
@@ -185,6 +174,8 @@ class VideoEditor:
         target_screen_width = 1080
         target_screen_height = 1920
         
+        # УЛУЧШЕННЫЙ АЛГОРИТМ МАСШТАБИРОВАНИЯ ДЛЯ БОЛЬШИХ ВИДЕО
+        
         # Определяем доступную область для видео (оставляем место для текста)
         text_area_height = 520  # Место для заголовков и субтитров
         available_width = target_screen_width
@@ -194,44 +185,71 @@ class VideoEditor:
         original_aspect = original_width / original_height
         available_aspect = available_width / available_height
         
-        # Определяем оптимальные размеры с сохранением пропорций
-        if original_aspect > available_aspect:
-            # Видео шире доступной области - масштабируем по ширине
-            target_width = available_width
-            target_height = int(available_width / original_aspect)
-            scale_method = "по ширине (видео широкое)"
-        else:
-            # Видео выше доступной области - масштабируем по высоте  
-            target_height = available_height
-            target_width = int(available_height * original_aspect)
-            scale_method = "по высоте (видео высокое)"
+        # Для больших видео (4K+) используем более агрессивное масштабирование
+        is_large_video = original_width >= 2160 or original_height >= 2160
         
-        # Убеждаемся, что размеры четные и не превышают доступную область
+        if is_large_video:
+            logger.info(f"Обнаружено большое видео: {original_width}x{original_height}")
+            # Для больших видео используем максимально доступную область
+            if original_aspect > available_aspect:
+                # Широкое видео - используем всю ширину
+                target_width = available_width
+                target_height = int(available_width / original_aspect)
+                # Если высота получается слишком маленькой, увеличиваем
+                if target_height < available_height * 0.6:
+                    target_height = int(available_height * 0.8)
+                    target_width = int(target_height * original_aspect)
+            else:
+                # Высокое видео - используем больше высоты
+                target_height = int(available_height * 0.9)
+                target_width = int(target_height * original_aspect)
+                # Если ширина превышает доступную, корректируем
+                if target_width > available_width:
+                    target_width = available_width
+                    target_height = int(available_width / original_aspect)
+        else:
+            # Для обычных видео используем стандартный алгоритм
+            if original_aspect > available_aspect:
+                target_width = available_width
+                target_height = int(available_width / original_aspect)
+            else:
+                target_height = available_height
+                target_width = int(available_height * original_aspect)
+        
+        # Убеждаемся, что размеры четные и в разумных пределах
         target_width = min(target_width, available_width)
         target_height = min(target_height, available_height)
         target_width = target_width - (target_width % 2)
         target_height = target_height - (target_height % 2)
         
-        # Дополнительная проверка для очень маленьких видео
-        min_size = 200
-        if target_width < min_size or target_height < min_size:
-            logger.info("Применяем минимальный размер")
-            if target_width < target_height:
-                target_width = min_size
-                target_height = int(min_size / original_aspect)
-            else:
-                target_height = min_size
-                target_width = int(min_size * original_aspect)
+        # Минимальные размеры для качества
+        min_width = 640   # Увеличили минимальную ширину
+        min_height = 360  # Увеличили минимальную высоту
+        
+        if target_width < min_width or target_height < min_height:
+            logger.info("Применяем минимальные размеры для качества")
+            if original_aspect > 1:  # Широкое видео
+                target_width = min_width
+                target_height = int(min_width / original_aspect)
+                if target_height < min_height:
+                    target_height = min_height
+                    target_width = int(min_height * original_aspect)
+            else:  # Высокое видео
+                target_height = min_height
+                target_width = int(min_height * original_aspect)
+                if target_width < min_width:
+                    target_width = min_width
+                    target_height = int(min_width / original_aspect)
             
             # Снова проверяем четность
             target_width = target_width - (target_width % 2)
             target_height = target_height - (target_height % 2)
         
-        # Финальная проверка - если размеры все еще неправильные, используем безопасные значения
+        # Финальная проверка
         if target_width <= 0 or target_height <= 0:
             logger.warning("Неправильные размеры, используем безопасные значения")
-            target_width = 720
-            target_height = 404  # 16:9 соотношение
+            target_width = 854   # Увеличили безопасные размеры
+            target_height = 480  # 16:9 соотношение
             target_width = target_width - (target_width % 2)
             target_height = target_height - (target_height % 2)
         
@@ -245,11 +263,23 @@ class VideoEditor:
             
         logger.info(f"Масштабирование: {original_width}x{original_height} -> {target_width}x{target_height}")
         
-        main_scaled = (
-            main_video
-            .video
-            .filter('scale', target_width, target_height)
-        )
+        # Используем улучшенное масштабирование для больших видео
+        if is_large_video:
+            # Для больших видео используем высококачественный алгоритм масштабирования
+            main_scaled = (
+                main_video
+                .video
+                .filter('scale', target_width, target_height, 
+                       flags='lanczos')  # Высококачественный алгоритм
+            )
+            logger.info(f"Используется Lanczos масштабирование для большого видео")
+        else:
+            # Для обычных видео используем стандартное масштабирование
+            main_scaled = (
+                main_video
+                .video
+                .filter('scale', target_width, target_height)
+            )
         
         # Накладываем основное видео на размытый фон
         video_with_bg = ffmpeg.filter([blurred_bg, main_scaled], 'overlay', 
@@ -336,24 +366,41 @@ class VideoEditor:
             )
             logger.info(f"🎮 Клип {clip_number} создан с GPU ускорением")
         else:
-            # CPU вывод (обычный)
-            (
-                ffmpeg
-                .output(final_video, audio, output_path, 
-                       vcodec='libx264',       # CPU кодировщик
-                       acodec='aac',
-                       preset='fast',          # Быстрый пресет для CPU
-                       crf=18,                 # Качество для CPU
-                       pix_fmt='yuv420p',      # Совместимость
-                       s='1080x1920',          # ПРИНУДИТЕЛЬНО 9:16 формат
-                       **{'b:v': '8M',         # Битрейт видео 8 Мбит/с
-                          'b:a': '192k',       # Битрейт аудио 192 кбит/с
-                          'maxrate': '10M',    # Максимальный битрейт
-                          'bufsize': '16M'})   # Размер буфера
-                .overwrite_output()
-                .run(quiet=True)
-            )
-            logger.info(f"💻 Клип {clip_number} создан с CPU")
+            # CPU вывод с улучшенным качеством для больших видео
+            if is_large_video:
+                # Для больших видео используем лучшие настройки качества
+                (
+                    ffmpeg
+                    .output(final_video, audio, output_path, 
+                           vcodec='libx264',
+                           acodec='aac',
+                           preset='medium',        # Лучший баланс скорость/качество
+                           crf=20,                 # Высокое качество для больших видео
+                           pix_fmt='yuv420p',
+                           s='1080x1920',
+                           **{'b:v': '6M',         # Битрейт для качества
+                              'b:a': '192k',
+                              'maxrate': '8M',
+                              'bufsize': '12M'})
+                    .overwrite_output()
+                    .run(quiet=True)
+                )
+                logger.info(f"💻 Большое видео - клип {clip_number} создан с высоким качеством")
+            else:
+                # Для обычных видео используем быстрые настройки
+                (
+                    ffmpeg
+                    .output(final_video, audio, output_path, 
+                           vcodec='libx264',
+                           acodec='aac',
+                           preset='fast',          # Быстрый пресет
+                           crf=22,                 # Хорошее качество
+                           pix_fmt='yuv420p',
+                           s='1080x1920')
+                    .overwrite_output()
+                    .run(quiet=True)
+                )
+                logger.info(f"💻 Клип {clip_number} создан с CPU")
     
     def _add_animated_subtitles(self, video, subtitles: list, start_time: float, duration: float):
         """Добавление анимированных субтитров"""
@@ -399,24 +446,8 @@ class VideoEditor:
         return result_video
     
     def _check_gpu_support(self) -> bool:
-        """Проверка поддержки GPU для ffmpeg"""
-        try:
-            import subprocess
-            
-            # Проверяем наличие NVIDIA GPU
-            result = subprocess.run(['nvidia-smi'], capture_output=True, text=True, check=False)
-            if result.returncode != 0:
-                return False
-            
-            # Проверяем поддержку NVENC в ffmpeg
-            result = subprocess.run(['ffmpeg', '-encoders'], capture_output=True, text=True, check=False)
-            if 'h264_nvenc' in result.stdout:
-                logger.info("✅ GPU поддержка (NVENC) доступна для создания клипов")
-                return True
-            else:
-                logger.info("❌ GPU поддержка (NVENC) недоступна для создания клипов")
-                return False
-                
-        except Exception as e:
-            logger.warning(f"Ошибка проверки GPU: {e}")
-            return False
+        """Проверка поддержки GPU для ffmpeg - ОТКЛЮЧЕНО ДЛЯ COLAB"""
+        # В Google Colab GPU поддержка часто вызывает проблемы с ffmpeg
+        # Принудительно отключаем для стабильности
+        logger.info("❌ GPU поддержка принудительно отключена для Colab")
+        return False

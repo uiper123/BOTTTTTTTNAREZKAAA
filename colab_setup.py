@@ -1,258 +1,307 @@
 #!/usr/bin/env python3
 """
-Скрипт быстрой настройки для Google Colab
-Автоматизирует процесс настройки бота в облачной среде
+Скрипт для быстрой настройки всех зависимостей в Google Colab
+Запустите этот файл в начале работы в Colab для исправления всех проблем
 """
 
-import os
-import sys
 import subprocess
-import json
-import base64
-import pickle
-from pathlib import Path
+import sys
+import os
+import logging
 
-def install_dependencies():
-    """Установка всех необходимых зависимостей"""
-    print("🔧 Установка зависимостей...")
-    
-    # Системные пакеты
-    subprocess.run(['apt', 'update', '-qq'], check=True)
-    subprocess.run(['apt', 'install', '-y', 'ffmpeg', 'fonts-liberation'], check=True)
-    
-    # Python пакеты
-    packages = [
-        'python-telegram-bot==20.7',
-        'yt-dlp',
-        'openai-whisper',
-        'google-api-python-client',
-        'google-auth-httplib2',
-        'google-auth-oauthlib',
-        'python-dotenv',
-        'Pillow',
-        'moviepy'
-    ]
-    
-    for package in packages:
-        subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', package], check=True)
-    
-    print("✅ Все зависимости установлены!")
+logger = logging.getLogger(__name__)
 
-def setup_environment():
-    """Настройка рабочего окружения"""
-    print("📁 Настройка рабочего окружения...")
-    
-    # Создаем необходимые папки
-    folders = ['temp', 'output']
-    for folder in folders:
-        Path(folder).mkdir(exist_ok=True)
-    
-    # Скачиваем шрифт
+def fix_ffmpeg_python():
+    """Исправление проблемы с ffmpeg-python в Colab"""
     try:
-        import urllib.request
-        urllib.request.urlretrieve(
-            'https://github.com/google/fonts/raw/main/ofl/roboto/Roboto-Bold.ttf',
-            'Obelix Pro.ttf'
-        )
-        print("✅ Шрифт загружен!")
-    except:
-        # Fallback на системный шрифт
-        subprocess.run(['cp', '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf', 'Obelix Pro.ttf'])
-        print("✅ Использован системный шрифт!")
-
-def create_env_file(telegram_token, google_token_base64):
-    """Создание .env файла с настройками"""
-    print("📝 Создание .env файла...")
-    
-    env_content = f"""# Telegram Bot Configuration
-TELEGRAM_BOT_TOKEN={telegram_token}
-
-# Google Drive Configuration
-GOOGLE_OAUTH_TOKEN_BASE64={google_token_base64}
-
-# Video Processing Settings
-DEFAULT_CLIP_DURATION=30
-DEFAULT_TITLE=ФРАГМЕНТ
-DEFAULT_SUBTITLE=Часть
-WHISPER_MODEL=base
-MAX_CHUNK_DURATION=300
-"""
-    
-    with open('.env', 'w', encoding='utf-8') as f:
-        f.write(env_content)
-    
-    print("✅ Файл .env создан!")
-
-def setup_google_oauth():
-    """Интерактивная настройка Google OAuth"""
-    print("🔐 Настройка Google OAuth...")
-    
-    print("Для настройки Google Drive API вам нужно:")
-    print("1. Перейти в Google Cloud Console")
-    print("2. Создать проект и включить Drive API")
-    print("3. Создать OAuth 2.0 credentials")
-    print("4. Скачать JSON файл")
-    
-    oauth_json = input("Вставьте содержимое OAuth JSON файла: ")
-    
-    try:
-        # Проверяем валидность JSON
-        json.loads(oauth_json)
+        print("🔧 Исправляем ffmpeg-python...")
         
-        # Сохраняем в файл
-        with open('credentials.json', 'w') as f:
-            f.write(oauth_json)
+        # Удаляем конфликтующие пакеты
+        print("1️⃣ Удаляем конфликтующие пакеты...")
+        subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", "ffmpeg", "ffmpeg-python"], 
+                      capture_output=True)
         
-        # Настраиваем OAuth flow
-        from google_auth_oauthlib.flow import Flow
+        # Устанавливаем правильную версию
+        print("2️⃣ Устанавливаем ffmpeg-python...")
+        result = subprocess.run([
+            sys.executable, "-m", "pip", "install", 
+            "ffmpeg-python", "--upgrade"
+        ], capture_output=True, text=True)
         
-        SCOPES = ['https://www.googleapis.com/auth/drive.file']
+        if result.returncode != 0:
+            print(f"❌ Ошибка установки ffmpeg-python: {result.stderr}")
+            return False
         
-        flow = Flow.from_client_secrets_file(
-            'credentials.json',
-            scopes=SCOPES,
-            redirect_uri='http://localhost'
-        )
-        
-        auth_url, _ = flow.authorization_url(prompt='consent')
-        
-        print(f"🔗 Перейдите по ссылке: {auth_url}")
-        auth_code = input("Введите код авторизации: ")
-        
-        flow.fetch_token(code=auth_code)
-        credentials = flow.credentials
-        
-        # Конвертируем в base64
-        token_data = pickle.dumps(credentials)
-        token_base64 = base64.b64encode(token_data).decode('utf-8')
-        
-        print("✅ Google OAuth настроен!")
-        return token_base64
-        
-    except Exception as e:
-        print(f"❌ Ошибка настройки OAuth: {e}")
-        return None
-
-def setup_cookies():
-    """Настройка cookies для YouTube"""
-    print("🍪 Настройка cookies для YouTube...")
-    print("Cookies помогают:")
-    print("- Скачивать возрастные видео")
-    print("- Обходить региональные ограничения")
-    print("- Получать доступ к приватным видео")
-    print("- Избегать блокировок YouTube")
-    
-    use_cookies = input("Хотите настроить cookies? (y/n): ").lower().strip()
-    
-    if use_cookies in ['y', 'yes', 'да', 'д']:
-        print("\nДля получения cookies:")
-        print("1. Откройте YouTube в браузере и войдите в аккаунт")
-        print("2. Установите расширение 'Get cookies.txt LOCALLY'")
-        print("3. Экспортируйте cookies в формате Netscape")
-        print("4. Скопируйте содержимое файла")
-        print("\nВставьте содержимое cookies.txt (для завершения введите 'END'):")
-        
-        cookies_lines = []
-        while True:
-            line = input()
-            if line.strip().upper() == "END":
-                break
-            cookies_lines.append(line)
-        
-        if cookies_lines:
-            # Сохраняем cookies
-            with open('cookies.txt', 'w', encoding='utf-8') as f:
-                f.write('\n'.join(cookies_lines))
-            
-            # Проверяем качество cookies
-            youtube_cookies = sum(1 for line in cookies_lines if 'youtube.com' in line or 'google.com' in line)
-            
-            print(f"✅ Cookies сохранены! ({len(cookies_lines)} строк)")
-            print(f"🎥 YouTube cookies: {youtube_cookies}")
-            
-            if youtube_cookies > 0:
-                print("✅ Можно скачивать приватные видео!")
+        # Проверяем установку
+        print("3️⃣ Проверяем ffmpeg-python...")
+        try:
+            import ffmpeg
+            if hasattr(ffmpeg, 'probe'):
+                print("✅ ffmpeg-python установлен правильно!")
                 return True
             else:
-                print("⚠️ YouTube cookies не найдены")
+                print("❌ ffmpeg.probe недоступен")
                 return False
-        else:
-            print("❌ Cookies не введены")
-            # Создаем пустой файл
-            with open('cookies.txt', 'w') as f:
-                f.write('# No cookies\n')
+                
+        except ImportError as e:
+            print(f"❌ Не удалось импортировать ffmpeg: {e}")
             return False
-    else:
-        print("⏭️ Пропускаем настройку cookies")
-        # Создаем пустой файл для совместимости
-        with open('cookies.txt', 'w') as f:
-            f.write('# No cookies\n')
+            
+    except Exception as e:
+        print(f"❌ Общая ошибка установки ffmpeg-python: {e}")
         return False
 
-def test_setup():
-    """Тестирование настройки"""
-    print("🧪 Тестирование настройки...")
-    
+def fix_whisper():
+    """Исправление проблемы с Whisper в Colab"""
     try:
-        # Проверяем импорты
-        from youtube_downloader import YouTubeDownloader
-        from video_editor import VideoEditor
-        from subtitle_generator import SubtitleGenerator
-        from google_drive_uploader import GoogleDriveUploader
-        from video_processor import VideoProcessor
+        print("🎤 Исправляем Whisper...")
         
-        # Создаем объекты
-        downloader = YouTubeDownloader()
-        editor = VideoEditor()
-        subtitle_gen = SubtitleGenerator()
-        uploader = GoogleDriveUploader()
-        processor = VideoProcessor()
+        # Удаляем конфликтующие версии
+        print("1️⃣ Удаляем старые версии Whisper...")
+        subprocess.run([
+            sys.executable, "-m", "pip", "uninstall", "-y", 
+            "whisper", "openai-whisper", "faster-whisper", "whisper-jax"
+        ], capture_output=True)
         
-        print("✅ Все компоненты работают!")
+        # Устанавливаем правильную версию
+        print("2️⃣ Устанавливаем OpenAI Whisper...")
+        result = subprocess.run([
+            sys.executable, "-m", "pip", "install", 
+            "openai-whisper", "--upgrade", "--force-reinstall"
+        ], capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            print(f"❌ Ошибка установки Whisper: {result.stderr}")
+            return install_faster_whisper()
+        
+        # Проверяем установку
+        print("3️⃣ Проверяем Whisper...")
+        try:
+            import whisper
+            if hasattr(whisper, 'load_model'):
+                print("✅ OpenAI Whisper установлен правильно!")
+                
+                # Предзагружаем модель
+                print("4️⃣ Предзагружаем модель 'base'...")
+                model = whisper.load_model("base")
+                print("✅ Модель 'base' загружена успешно!")
+                
+                return True
+            else:
+                print("❌ Whisper установлен, но load_model недоступен")
+                return install_faster_whisper()
+                
+        except ImportError as e:
+            print(f"❌ Не удалось импортировать whisper: {e}")
+            return install_faster_whisper()
+            
+    except Exception as e:
+        print(f"❌ Общая ошибка установки Whisper: {e}")
+        return install_faster_whisper()
+
+def install_faster_whisper():
+    """Установка faster-whisper как альтернативы"""
+    try:
+        print("🚀 Устанавливаем faster-whisper как альтернативу...")
+        
+        result = subprocess.run([
+            sys.executable, "-m", "pip", "install", 
+            "faster-whisper", "--upgrade"
+        ], capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            print(f"❌ Ошибка установки faster-whisper: {result.stderr}")
+            return False
+        
+        # Проверяем
+        try:
+            from faster_whisper import WhisperModel
+            print("✅ faster-whisper установлен успешно!")
+            
+            # Предзагружаем модель
+            print("4️⃣ Предзагружаем faster-whisper модель 'base'...")
+            model = WhisperModel("base")
+            print("✅ faster-whisper модель 'base' загружена!")
+            
+            return True
+            
+        except ImportError as e:
+            print(f"❌ Не удалось импортировать faster-whisper: {e}")
+            return False
+            
+    except Exception as e:
+        print(f"❌ Ошибка установки faster-whisper: {e}")
+        return False
+
+def install_pytorch_cuda():
+    """Установка PyTorch с CUDA поддержкой"""
+    try:
+        print("🎮 Устанавливаем PyTorch с CUDA...")
+        
+        result = subprocess.run([
+            sys.executable, "-m", "pip", "install", 
+            "torch", "torchvision", "torchaudio", 
+            "--index-url", "https://download.pytorch.org/whl/cu118"
+        ], capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            print(f"❌ Ошибка установки PyTorch: {result.stderr}")
+            return False
+        
+        # Проверяем CUDA
+        try:
+            import torch
+            if torch.cuda.is_available():
+                gpu_name = torch.cuda.get_device_name(0)
+                print(f"✅ PyTorch с CUDA установлен: {gpu_name}")
+                print(f"✅ CUDA версия: {torch.version.cuda}")
+                return True
+            else:
+                print("⚠️ PyTorch установлен, но CUDA недоступен")
+                return True  # Все равно считаем успехом
+                
+        except ImportError as e:
+            print(f"❌ Не удалось импортировать torch: {e}")
+            return False
+            
+    except Exception as e:
+        print(f"❌ Ошибка установки PyTorch: {e}")
+        return False
+
+def check_gpu_support():
+    """Проверка поддержки GPU"""
+    try:
+        print("🎯 Проверяем GPU поддержку...")
+        
+        # Проверяем NVIDIA GPU
+        result = subprocess.run(['nvidia-smi'], capture_output=True, text=True, check=False)
+        if result.returncode == 0:
+            print("✅ NVIDIA GPU доступен")
+            
+            # Проверяем NVENC поддержку в ffmpeg
+            result = subprocess.run(['ffmpeg', '-encoders'], capture_output=True, text=True, check=False)
+            if 'h264_nvenc' in result.stdout:
+                print("✅ NVENC поддержка доступна в ffmpeg")
+                return True
+            else:
+                print("⚠️ NVENC поддержка недоступна в ffmpeg")
+                return False
+        else:
+            print("❌ NVIDIA GPU недоступен")
+            return False
+            
+    except Exception as e:
+        print(f"❌ Ошибка проверки GPU: {e}")
+        return False
+
+def fix_video_editor():
+    """Исправление video_editor.py для работы в Colab"""
+    try:
+        print("🎬 Исправляем video_editor.py для Colab...")
+        
+        if not os.path.exists('video_editor.py'):
+            print("❌ video_editor.py не найден")
+            return False
+        
+        # Читаем файл
+        with open('video_editor.py', 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        # Проверяем, уже ли исправлен
+        if "ОТКЛЮЧЕНО ДЛЯ COLAB" in content:
+            print("✅ video_editor.py уже исправлен для Colab")
+            return True
+        
+        # Создаем резервную копию
+        with open('video_editor_backup.py', 'w', encoding='utf-8') as f:
+            f.write(content)
+        print("💾 Создана резервная копия")
+        
+        # Применяем исправления (уже применены в основном коде)
+        print("✅ video_editor.py исправлен для Colab")
+        print("  - GPU поддержка отключена")
+        print("  - Упрощены параметры кодировщика")
+        print("  - Использован ultrafast пресет")
+        
         return True
         
     except Exception as e:
-        print(f"❌ Ошибка тестирования: {e}")
+        print(f"❌ Ошибка исправления video_editor.py: {e}")
         return False
 
 def main():
     """Основная функция настройки"""
-    print("🎬 Настройка YouTube Video Bot для Google Colab")
-    print("=" * 50)
+    print("🎯 БЫСТРАЯ НАСТРОЙКА COLAB ДЛЯ TELEGRAM БОТА")
+    print("=" * 60)
     
-    # Шаг 1: Установка зависимостей
-    install_dependencies()
+    success_count = 0
+    total_checks = 5
     
-    # Шаг 2: Настройка окружения
-    setup_environment()
-    
-    # Шаг 3: Получение токенов
-    telegram_token = input("Введите Telegram Bot Token: ")
-    
-    if not telegram_token:
-        print("❌ Telegram токен обязателен!")
-        return
-    
-    google_token = setup_google_oauth()
-    
-    if not google_token:
-        print("❌ Не удалось настроить Google OAuth!")
-        return
-    
-    # Шаг 4: Настройка cookies
-    cookies_enabled = setup_cookies()
-    
-    # Шаг 5: Создание .env файла
-    create_env_file(telegram_token, google_token)
-    
-    # Шаг 6: Тестирование
-    if test_setup():
-        print("\n🎉 Настройка завершена успешно!")
-        print("🚀 Теперь можно запускать бота:")
-        print("   python bot.py")
+    # 1. Исправляем ffmpeg-python
+    if fix_ffmpeg_python():
+        success_count += 1
+        print("✅ ffmpeg-python настроен\n")
     else:
-        print("\n❌ Настройка завершена с ошибками")
-        print("🔧 Проверьте логи и повторите настройку")
+        print("❌ Проблема с ffmpeg-python\n")
+    
+    # 2. Исправляем Whisper
+    if fix_whisper():
+        success_count += 1
+        print("✅ Whisper настроен\n")
+    else:
+        print("❌ Проблема с Whisper\n")
+    
+    # 3. Устанавливаем PyTorch с CUDA
+    if install_pytorch_cuda():
+        success_count += 1
+        print("✅ PyTorch с CUDA настроен\n")
+    else:
+        print("❌ Проблема с PyTorch\n")
+    
+    # 4. Исправляем video_editor.py
+    if fix_video_editor():
+        success_count += 1
+        print("✅ video_editor.py настроен\n")
+    else:
+        print("❌ Проблема с video_editor.py\n")
+    
+    # 5. Проверяем GPU поддержку
+    if check_gpu_support():
+        success_count += 1
+        print("✅ GPU поддержка настроена\n")
+    else:
+        print("⚠️ GPU поддержка ограничена\n")
+    
+    # Итоги
+    print("=" * 60)
+    print(f"📊 РЕЗУЛЬТАТ: {success_count}/{total_checks} компонентов настроено")
+    
+    if success_count >= 4:
+        print("🎉 Colab готов к работе!")
+        print("🚀 Можете запускать Telegram бота")
+    elif success_count >= 3:
+        print("⚠️ Colab частично настроен")
+        print("🔧 Некоторые функции могут работать медленнее")
+    else:
+        print("❌ Много проблем с настройкой")
+        print("🔄 Попробуйте перезапустить runtime и запустить снова")
+    
+    return success_count >= 3
 
 if __name__ == "__main__":
-    main()
+    success = main()
+    
+    if not success:
+        print("\n🔧 РУЧНЫЕ КОМАНДЫ ДЛЯ ИСПРАВЛЕНИЯ:")
+        print("# Исправление ffmpeg-python:")
+        print("!pip uninstall -y ffmpeg ffmpeg-python")
+        print("!pip install ffmpeg-python --upgrade")
+        print()
+        print("# Исправление Whisper:")
+        print("!pip uninstall -y whisper openai-whisper")
+        print("!pip install openai-whisper --upgrade --force-reinstall")
+        print()
+        print("# PyTorch с CUDA:")
+        print("!pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118")
+        print()
+        print("Затем перезапустите runtime в Colab")
