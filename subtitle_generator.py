@@ -1,7 +1,6 @@
 import os
 import asyncio
 import logging
-import whisper
 import tempfile
 from pathlib import Path
 
@@ -12,12 +11,76 @@ class SubtitleGenerator:
         # Загружаем легкую модель Whisper
         self.model = None
         self.model_name = "base"  # Можно использовать "tiny" для еще большей скорости
+        self.whisper_available = False
+        self._check_whisper()
+    
+    def _check_whisper(self):
+        """Проверка доступности Whisper"""
+        try:
+            import whisper
+            # Проверяем, есть ли функция load_model
+            if hasattr(whisper, 'load_model'):
+                self.whisper = whisper
+                self.whisper_available = True
+                logger.info("✅ OpenAI Whisper доступен")
+            else:
+                logger.error("❌ OpenAI Whisper установлен, но load_model недоступен")
+                self._try_alternative_whisper()
+        except ImportError:
+            logger.error("❌ OpenAI Whisper не установлен")
+            self._try_alternative_whisper()
+    
+    def _try_alternative_whisper(self):
+        """Попытка использовать альтернативные версии Whisper"""
+        try:
+            # Пробуем faster-whisper
+            import faster_whisper
+            self.whisper = faster_whisper
+            self.whisper_available = True
+            self.use_faster_whisper = True
+            logger.info("✅ Используем faster-whisper как альтернативу")
+        except ImportError:
+            try:
+                # Пробуем whisper-jax
+                import whisper_jax
+                self.whisper = whisper_jax
+                self.whisper_available = True
+                self.use_whisper_jax = True
+                logger.info("✅ Используем whisper-jax как альтернативу")
+            except ImportError:
+                logger.error("❌ Ни одна версия Whisper не доступна")
+                self.whisper_available = False
     
     def _load_model(self):
-        """Ленивая загрузка модели"""
+        """Ленивая загрузка модели с проверкой доступности"""
+        if not self.whisper_available:
+            logger.error("Whisper недоступен, субтитры не будут созданы")
+            return False
+            
         if self.model is None:
-            logger.info(f"Загрузка модели Whisper: {self.model_name}")
-            self.model = whisper.load_model(self.model_name)
+            try:
+                logger.info(f"Загрузка модели Whisper: {self.model_name}")
+                
+                if hasattr(self, 'use_faster_whisper'):
+                    # Используем faster-whisper
+                    from faster_whisper import WhisperModel
+                    self.model = WhisperModel(self.model_name)
+                elif hasattr(self, 'use_whisper_jax'):
+                    # Используем whisper-jax
+                    self.model = self.whisper.load_model(self.model_name)
+                else:
+                    # Используем обычный OpenAI Whisper
+                    self.model = self.whisper.load_model(self.model_name)
+                    
+                logger.info("✅ Модель Whisper загружена успешно")
+                return True
+                
+            except Exception as e:
+                logger.error(f"❌ Ошибка загрузки модели Whisper: {e}")
+                self.whisper_available = False
+                return False
+        
+        return True
     
     async def generate(self, video_path: str) -> list:
         """Генерация субтитров для видео"""
@@ -37,17 +100,39 @@ class SubtitleGenerator:
     def _generate_sync(self, video_path: str) -> list:
         """Синхронная генерация субтитров"""
         try:
-            self._load_model()
+            # Проверяем, удалось ли загрузить модель
+            if not self._load_model():
+                logger.warning("Модель Whisper недоступна, возвращаем пустые субтитры")
+                return []
             
             logger.info(f"Генерация субтитров для: {video_path}")
             
-            # Извлекаем аудио и генерируем субтитры с детальными временными метками
-            result = self.model.transcribe(
-                video_path,
-                language='ru',  # Русский язык
-                word_timestamps=True,  # Временные метки для слов
-                verbose=False
-            )
+            # Разные способы транскрипции в зависимости от типа Whisper
+            if hasattr(self, 'use_faster_whisper'):
+                # faster-whisper имеет другой API
+                segments, info = self.model.transcribe(
+                    video_path,
+                    language='ru',
+                    word_timestamps=True
+                )
+                # Конвертируем в формат OpenAI Whisper
+                result = {'segments': []}
+                for segment in segments:
+                    result['segments'].append({
+                        'start': segment.start,
+                        'end': segment.end,
+                        'text': segment.text,
+                        'words': [{'word': word.word, 'start': word.start, 'end': word.end} 
+                                 for word in segment.words] if hasattr(segment, 'words') else []
+                    })
+            else:
+                # Обычный OpenAI Whisper или whisper-jax
+                result = self.model.transcribe(
+                    video_path,
+                    language='ru',  # Русский язык
+                    word_timestamps=True,  # Временные метки для слов
+                    verbose=False
+                )
             
             # Сначала пробуем получить субтитры по словам из сегментов
             word_subtitles = []
