@@ -19,156 +19,242 @@ class TelegramBot:
     def __init__(self):
         self.token = os.getenv('TELEGRAM_BOT_TOKEN')
         self.video_processor = VideoProcessor()
+        self.user_settings = {}  # Хранение настроек пользователей
         
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /start"""
+        user_id = update.effective_user.id
+        self.user_settings[user_id] = {
+            'duration': 30,
+            'title': 'ФРАГМЕНТ',
+            'subtitle': 'Часть'
+        }  # Настройки по умолчанию
+        
         await update.message.reply_text(
-            "Привет! Я бот для нарезки видео на шотсы.\n\n"
-            "Отправь мне:\n"
+            "🎬 Привет! Я бот для нарезки видео на шотсы.\n\n"
+            "📝 Команды:\n"
+            "/start - Начать работу\n"
+            "/duration <секунды> - Установить длительность шотсов (по умолчанию 30 сек)\n"
+            "/title <текст> - Установить заголовок (по умолчанию 'ФРАГМЕНТ')\n"
+            "/subtitle <текст> - Установить подзаголовок (по умолчанию 'Часть')\n"
+            "/settings - Показать текущие настройки\n"
+            "/help - Помощь\n\n"
+            "📹 Отправь мне:\n"
             "• Ссылку на YouTube видео\n"
             "• Видео файл\n\n"
-            "Команды:\n"
-            "/duration <секунды> - установить длительность шотсов (по умолчанию 30 сек)\n"
-            "/title <заголовок> - установить заголовок\n"
-            "/subtitle <подзаголовок> - установить подзаголовок\n"
-            "/cookies - установить cookies для доступа к приватным видео"
+            "Я нарежу его на шотсы и загружу на Google Drive!"
         )
     
     async def set_duration(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Установка длительности шотсов"""
+        """Команда /duration для установки длительности шотсов"""
+        user_id = update.effective_user.id
+        
+        if not context.args:
+            current_duration = self.user_settings.get(user_id, {}).get('duration', 30)
+            await update.message.reply_text(f"⏱ Текущая длительность: {current_duration} секунд")
+            return
+            
         try:
             duration = int(context.args[0])
-            context.user_data['duration'] = duration
-            await update.message.reply_text(f"Длительность шотсов установлена: {duration} секунд")
-        except (IndexError, ValueError):
-            await update.message.reply_text("Использование: /duration <секунды>")
+            if duration < 5 or duration > 300:
+                await update.message.reply_text("⚠️ Длительность должна быть от 5 до 300 секунд")
+                return
+                
+            if user_id not in self.user_settings:
+                self.user_settings[user_id] = {}
+            self.user_settings[user_id]['duration'] = duration
+            
+            await update.message.reply_text(f"✅ Длительность установлена: {duration} секунд")
+            
+        except ValueError:
+            await update.message.reply_text("⚠️ Введите число секунд")
     
     async def set_title(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Установка заголовка"""
-        if context.args:
-            title = ' '.join(context.args)
-            context.user_data['title'] = title
-            await update.message.reply_text(f"Заголовок установлен: {title}")
-        else:
-            await update.message.reply_text("Использование: /title <текст заголовка>")
+        """Команда /title для установки заголовка"""
+        user_id = update.effective_user.id
+        
+        if not context.args:
+            current_title = self.user_settings.get(user_id, {}).get('title', 'ФРАГМЕНТ')
+            await update.message.reply_text(f"📝 Текущий заголовок: '{current_title}'")
+            return
+        
+        title = ' '.join(context.args)
+        if len(title) > 50:
+            await update.message.reply_text("⚠️ Заголовок слишком длинный (максимум 50 символов)")
+            return
+        
+        # Инициализируем настройки пользователя если их нет
+        if user_id not in self.user_settings:
+            self.user_settings[user_id] = {
+                'duration': 30,
+                'title': 'ФРАГМЕНТ',
+                'subtitle': 'Часть'
+            }
+        
+        self.user_settings[user_id]['title'] = title
+        self.user_settings[user_id]['custom_title'] = True  # Флаг что заголовок пользовательский
+        
+        await update.message.reply_text(f"✅ Заголовок установлен: '{title}'")
     
     async def set_subtitle(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Установка подзаголовка"""
-        if context.args:
-            subtitle = ' '.join(context.args)
-            context.user_data['subtitle'] = subtitle
-            await update.message.reply_text(f"Подзаголовок установлен: {subtitle}")
-        else:
-            await update.message.reply_text("Использование: /subtitle <текст подзаголовка>")
+        """Команда /subtitle для установки подзаголовка"""
+        user_id = update.effective_user.id
+        
+        if not context.args:
+            current_subtitle = self.user_settings.get(user_id, {}).get('subtitle', 'Часть')
+            await update.message.reply_text(f"📝 Текущий подзаголовок: '{current_subtitle}'")
+            return
+        
+        subtitle = ' '.join(context.args)
+        if len(subtitle) > 50:
+            await update.message.reply_text("⚠️ Подзаголовок слишком длинный (максимум 50 символов)")
+            return
+        
+        # Инициализируем настройки пользователя если их нет
+        if user_id not in self.user_settings:
+            self.user_settings[user_id] = {
+                'duration': 30,
+                'title': 'ФРАГМЕНТ',
+                'subtitle': 'Часть'
+            }
+        
+        self.user_settings[user_id]['subtitle'] = subtitle
+        self.user_settings[user_id]['custom_subtitle'] = True  # Флаг что подзаголовок пользовательский
+        
+        await update.message.reply_text(f"✅ Подзаголовок установлен: '{subtitle}'")
     
-    async def set_cookies(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Установка cookies для yt-dlp"""
+    async def show_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда /settings для показа текущих настроек"""
+        user_id = update.effective_user.id
+        settings = self.user_settings.get(user_id, {
+            'duration': 30,
+            'title': 'ФРАГМЕНТ',
+            'subtitle': 'Часть'
+        })
+        
         await update.message.reply_text(
-            "Отправьте содержимое cookies файла в следующем сообщении.\n\n"
-            "Cookies должны быть в формате Netscape или JSON.\n"
-            "Например, экспортированные из браузера через расширение."
+            f"⚙️ Текущие настройки:\n\n"
+            f"⏱ Длительность: {settings.get('duration', 30)} секунд\n"
+            f"📝 Заголовок: '{settings.get('title', 'ФРАГМЕНТ')}'\n"
+            f"📝 Подзаголовок: '{settings.get('subtitle', 'Часть')}'\n\n"
+            f"Для изменения используйте команды:\n"
+            f"/duration <секунды>\n"
+            f"/title <текст>\n"
+            f"/subtitle <текст>"
         )
-        context.user_data['waiting_for_cookies'] = True
     
-    async def process_cookies(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработка cookies файла"""
-        try:
-            cookies_content = update.message.text
-            
-            # Сохраняем cookies в файл
-            with open('cookies.txt', 'w', encoding='utf-8') as f:
-                f.write(cookies_content)
-            
-            await update.message.reply_text(
-                "✅ Cookies файл сохранен!\n"
-                "Теперь можно скачивать видео с ограниченным доступом."
-            )
-            
-            # Сбрасываем флаг ожидания
-            context.user_data['waiting_for_cookies'] = False
-            
-        except Exception as e:
-            logger.error(f"Ошибка сохранения cookies: {e}")
-            await update.message.reply_text(f"❌ Ошибка сохранения cookies: {str(e)}")
-            context.user_data['waiting_for_cookies'] = False
+    async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда /help"""
+        await update.message.reply_text(
+            "🎬 Бот для нарезки видео на шотсы\n\n"
+            "📝 Команды:\n"
+            "/duration <секунды> - Длительность шотсов (5-300 сек)\n"
+            "/title <текст> - Заголовок (например: 'ЭПИЗОД')\n"
+            "/subtitle <текст> - Подзаголовок (например: 'Серия')\n"
+            "/settings - Показать текущие настройки\n\n"
+            "📹 Как использовать:\n"
+            "1. Настройте параметры командами выше\n"
+            "2. Отправьте ссылку на YouTube или видео файл\n"
+            "3. Дождитесь обработки\n"
+            "4. Получите ссылки на готовые шотсы\n\n"
+            "⚙️ Особенности:\n"
+            "• Субтитры по одному слову с анимацией\n"
+            "• Пользовательские заголовки\n"
+            "• Высокое качество видео\n"
+            "• Автоматическая загрузка на Google Drive\n"
+            "• Поддержка больших видео (нарезка на чанки)\n\n"
+            "💡 Примеры заголовков:\n"
+            "/title УРОК → 'УРОК 1', 'УРОК 2'...\n"
+            "/subtitle Глава → 'Глава 1', 'Глава 2'..."
+        )
     
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка сообщений"""
+        user_id = update.effective_user.id
         message = update.message
         
-        # Проверяем, ждем ли мы cookies
-        if context.user_data.get('waiting_for_cookies'):
-            await self.process_cookies(update, context)
-            return
+        # Получаем настройки пользователя
+        user_config = self.user_settings.get(user_id, {
+            'duration': 30,
+            'title': 'ФРАГМЕНТ',
+            'subtitle': 'Часть'
+        })
         
-        # Проверяем, есть ли видео файл
-        if message.video:
-            await self.process_video_file(update, context)
-        # Проверяем, есть ли ссылка на YouTube
-        elif message.text and ('youtube.com' in message.text or 'youtu.be' in message.text):
-            await self.process_youtube_url(update, context)
+        if message.text and ('youtube.com' in message.text or 'youtu.be' in message.text):
+            # Обработка YouTube ссылки
+            await self.process_youtube_url(update, message.text, user_config)
+            
+        elif message.video:
+            # Обработка видео файла
+            await self.process_video_file(update, message.video, user_config)
+            
         else:
-            await message.reply_text("Отправьте видео файл или ссылку на YouTube")
+            await update.message.reply_text(
+                "⚠️ Отправьте ссылку на YouTube видео или видео файл"
+            )
     
-    async def process_video_file(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработка видео файла"""
-        await update.message.reply_text("Начинаю обработку видео файла...")
-        
-        # Получаем параметры пользователя
-        duration = context.user_data.get('duration', 30)
-        title = context.user_data.get('title', 'Заголовок')
-        subtitle = context.user_data.get('subtitle', 'Подзаголовок')
+    async def process_youtube_url(self, update: Update, url: str, config: dict):
+        """Обработка YouTube ссылки"""
+        await update.message.reply_text("🔄 Начинаю обработку YouTube видео...")
         
         try:
-            # Скачиваем файл
-            file = await context.bot.get_file(update.message.video.file_id)
-            file_path = f"temp_video_{update.effective_user.id}.mp4"
-            await file.download_to_drive(file_path)
-            
-            # Обрабатываем видео
-            result = await self.video_processor.process_video(
-                file_path, duration, title, subtitle, update.effective_user.id
-            )
+            # Запускаем обработку видео
+            result = await self.video_processor.process_youtube_video(url, config)
             
             if result['success']:
-                await update.message.reply_text(
-                    f"Обработка завершена!\n"
-                    f"Создано {result['clips_count']} клипов\n"
-                    f"Ссылка на файл со ссылками: {result['links_file']}"
-                )
+                await self.send_results(update, result)
             else:
-                await update.message.reply_text(f"Ошибка: {result['error']}")
-                
-        except Exception as e:
-            logger.error(f"Ошибка обработки видео: {e}")
-            await update.message.reply_text(f"Произошла ошибка: {str(e)}")
-    
-    async def process_youtube_url(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработка ссылки YouTube"""
-        await update.message.reply_text("Начинаю скачивание и обработку YouTube видео...")
-        
-        # Получаем параметры пользователя
-        duration = context.user_data.get('duration', 30)
-        title = context.user_data.get('title', 'Заголовок')
-        subtitle = context.user_data.get('subtitle', 'Подзаголовок')
-        
-        try:
-            result = await self.video_processor.process_youtube_video(
-                update.message.text, duration, title, subtitle, update.effective_user.id
-            )
-            
-            if result['success']:
-                await update.message.reply_text(
-                    f"Обработка завершена!\n"
-                    f"Создано {result['clips_count']} клипов\n"
-                    f"Ссылка на файл со ссылками: {result['links_file']}"
-                )
-            else:
-                await update.message.reply_text(f"Ошибка: {result['error']}")
+                await update.message.reply_text(f"❌ Ошибка: {result['error']}")
                 
         except Exception as e:
             logger.error(f"Ошибка обработки YouTube: {e}")
-            await update.message.reply_text(f"Произошла ошибка: {str(e)}")
+            await update.message.reply_text("❌ Произошла ошибка при обработке видео")
+    
+    async def process_video_file(self, update: Update, video, config: dict):
+        """Обработка видео файла"""
+        await update.message.reply_text("🔄 Начинаю обработку видео файла...")
+        
+        try:
+            # Скачиваем файл
+            file = await video.get_file()
+            file_path = f"temp_video_{update.effective_user.id}.mp4"
+            await file.download_to_drive(file_path)
+            
+            # Запускаем обработку
+            result = await self.video_processor.process_video_file(file_path, config)
+            
+            # Удаляем временный файл
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            
+            if result['success']:
+                await self.send_results(update, result)
+            else:
+                await update.message.reply_text(f"❌ Ошибка: {result['error']}")
+                
+        except Exception as e:
+            logger.error(f"Ошибка обработки файла: {e}")
+            await update.message.reply_text("❌ Произошла ошибка при обработке видео")
+    
+    async def send_results(self, update: Update, result: dict):
+        """Отправка результатов пользователю"""
+        links_file = result.get('links_file')
+        total_clips = result.get('total_clips', 0)
+        
+        await update.message.reply_text(
+            f"✅ Обработка завершена!\n"
+            f"📊 Создано шотсов: {total_clips}\n"
+            f"📁 Все файлы загружены на Google Drive"
+        )
+        
+        if links_file and os.path.exists(links_file):
+            # Отправляем файл со ссылками
+            with open(links_file, 'rb') as f:
+                await update.message.reply_document(
+                    document=f,
+                    filename="video_links.txt",
+                    caption="📋 Ссылки на все созданные шотсы"
+                )
     
     def run(self):
         """Запуск бота"""
@@ -179,10 +265,12 @@ class TelegramBot:
         application.add_handler(CommandHandler("duration", self.set_duration))
         application.add_handler(CommandHandler("title", self.set_title))
         application.add_handler(CommandHandler("subtitle", self.set_subtitle))
-        application.add_handler(CommandHandler("cookies", self.set_cookies))
-        application.add_handler(MessageHandler(filters.ALL, self.handle_message))
+        application.add_handler(CommandHandler("settings", self.show_settings))
+        application.add_handler(CommandHandler("help", self.help_command))
+        application.add_handler(MessageHandler(filters.TEXT | filters.VIDEO, self.handle_message))
         
         # Запускаем бота
+        logger.info("Бот запущен...")
         application.run_polling()
 
 if __name__ == '__main__':
