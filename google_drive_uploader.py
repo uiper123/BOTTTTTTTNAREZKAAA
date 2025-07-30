@@ -3,6 +3,8 @@ import pickle
 import base64
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from dotenv import load_dotenv
 
@@ -36,37 +38,31 @@ class GoogleDriveUploader:
             print(f"Ошибка аутентификации Google Drive: {e}")
             raise
     
-    async def upload_file(self, file_path, filename):
-        """Загрузка файла на Google Drive"""
+    def upload_file(self, file_path, file_name):
+        """Загружает файл на Google Drive и возвращает ссылку."""
+        if not self.creds or not self.creds.valid:
+            if self.creds and self.creds.expired and self.creds.refresh_token:
+                self.creds.refresh(Request())
+            else:
+                raise Exception("Не удалось получить учетные данные Google.")
+
         try:
-            # Метаданные файла
-            file_metadata = {
-                'name': filename,
-                'parents': [self._get_or_create_folder()]
-            }
+            service = build('drive', 'v3', credentials=self.creds)
             
-            # Загружаем файл
-            media = MediaFileUpload(file_path, resumable=True)
-            file = self.service.files().create(
+            file_metadata = {'name': file_name}
+            media = MediaFileUpload(file_path, mimetype='video/mp4')
+            
+            file = service.files().create(
                 body=file_metadata,
                 media_body=media,
-                fields='id'
+                fields='id, webViewLink'
             ).execute()
             
-            file_id = file.get('id')
-            
-            # Делаем файл общедоступным
-            self.service.permissions().create(
-                fileId=file_id,
-                body={'role': 'reader', 'type': 'anyone'}
-            ).execute()
-            
-            # Возвращаем прямую ссылку для скачивания
-            download_link = f"https://drive.google.com/uc?export=download&id={file_id}"
-            return download_link
-            
+            print(f"Файл '{file_name}' успешно загружен. ID: {file.get('id')}")
+            return file.get('webViewLink')
+
         except Exception as e:
-            print(f"Ошибка загрузки файла {filename}: {e}")
+            print(f"Ошибка при загрузке файла на Google Drive: {e}")
             raise
     
     def _get_or_create_folder(self):
