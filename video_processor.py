@@ -11,6 +11,7 @@ import whisper
 import torch
 from google_drive_uploader import GoogleDriveUploader
 from video_editor import VideoEditor
+import math
 
 class VideoProcessor:
     def __init__(self):
@@ -43,14 +44,14 @@ class VideoProcessor:
             
             print(f"🎬 Обрабатываем видео длительностью {video_duration:.1f} секунд")
             
-            # Оптимизированная разбивка на чанки для Colab
-            chunk_duration = min(180, video_duration / 2)  # 3 минуты или половина видео
+            # Умная нарезка на чанки
             chunks = []
+            MIN_CHUNKABLE_DURATION = 45 # Не нарезаем видео короче 45 секунд
             
-            if video_duration > chunk_duration:
-                chunks = await self._split_video_to_chunks_parallel(video_path, temp_dir, chunk_duration)
+            if video_duration > MIN_CHUNKABLE_DURATION:
+                chunks = await self._split_video_to_chunks_parallel(video_path, temp_dir, 180) # Чанки по 3 минуты
             else:
-                chunks = [video_path]
+                chunks = [video_path] # Обрабатываем как один чанк
             
             print(f"📦 Создано {len(chunks)} чанков для обработки")
             
@@ -125,31 +126,45 @@ class VideoProcessor:
                 print(f"Удален временный видеофайл: {downloaded_video_path}")
     
     async def _download_youtube_video(self, url, user_id):
-        """Скачивание видео с YouTube"""
-        output_path = f"youtube_video_{user_id}.%(ext)s"
+        """Скачивание видео с YouTube с проверкой и fallback'ом"""
+        output_template = f"youtube_video_{user_id}.%(ext)s"
         
+        # Основные опции скачивания
         ydl_opts = {
             'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-            'outtmpl': output_path,
+            'outtmpl': output_template,
             'cookiefile': 'cookies.txt' if os.path.exists('cookies.txt') else None,
-            'ignoreerrors': True,
+            'quiet': True, # Уменьшаем спам в логах
+            'no_warnings': True,
         }
         
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            if 'entries' in info:
-                # Playlist, take the first video
-                info = info['entries'][0]
-            
-            filename = ydl.prepare_filename(info)
-            if not os.path.exists(filename):
-                # Fallback if the specific format failed
-                ydl_opts['format'] = 'best'
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl_fallback:
-                    info = ydl_fallback.extract_info(url, download=True)
-                    filename = ydl_fallback.prepare_filename(info)
+        downloaded_filepath = None
+        
+        try:
+            print("Попытка скачивания в лучшем качестве (mp4)...")
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                # Получаем реальное имя файла после скачивания
+                downloaded_filepath = ydl.prepare_filename(info)
 
-        return filename
+        except Exception as e:
+            print(f"⚠️ Первая попытка не удалась: {e}")
+            print("Попытка скачивания в любом лучшем качестве (fallback)...")
+            ydl_opts['format'] = 'best' # Более простой и надежный формат
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                    downloaded_filepath = ydl.prepare_filename(info)
+            except Exception as fallback_e:
+                print(f"❌ Резервный метод скачивания также не удался: {fallback_e}")
+                raise Exception("Не удалось скачать видео. Проверьте URL и cookies.") from fallback_e
+
+        # Финальная проверка, существует ли файл
+        if not downloaded_filepath or not os.path.exists(downloaded_filepath):
+            raise Exception(f"Скачивание завершилось, но итоговый файл не был создан. YouTube может блокировать скачивание (403 Forbidden).")
+            
+        print(f"✅ Видео успешно сохранено как: {downloaded_filepath}")
+        return downloaded_filepath
     
     def _get_video_info(self, video_path):
         """Получение информации о видео"""
@@ -181,15 +196,22 @@ class VideoProcessor:
         video_info = self._get_video_info(video_path)
         total_duration = video_info['duration']
         
-        chunk_count = int(total_duration // chunk_duration) + 1
-        print(f"⚡ ПАРАЛЛЕЛЬНАЯ разбивка на {chunk_count} чанков по {chunk_duration} секунд")
+        # Исправленная математика для нарезки
+        chunk_count = math.ceil(total_duration / chunk_duration)
+        
+        print(f"⚡ ПАРАЛЛЕЛЬНАЯ разбивка на {chunk_count} чанков по ~{chunk_duration} секунд")
         
         # Создаем задачи для параллельного создания чанков
         chunk_tasks = []
         for i in range(chunk_count):
             start_time = i * chunk_duration
+            # Последний чанк может быть короче
+            current_chunk_duration = min(chunk_duration, total_duration - start_time)
             chunk_path = os.path.join(temp_dir, f"chunk_{i}.mp4")
-            task = self._create_chunk_async(video_path, chunk_path, start_time, chunk_duration, i, chunk_count)
+            
+            if current_chunk_duration <= 0: continue
+
+            task = self._create_chunk_async(video_path, chunk_path, start_time, current_chunk_duration, i, chunk_count)
             chunk_tasks.append(task)
         
         # Выполняем все задачи параллельно
@@ -305,18 +327,11 @@ class VideoProcessor:
                 
                 clip_duration = actual_duration if total_duration <= duration else duration
                 
-                # ИСПРАВЛЕНИЕ: Правильно фильтруем субтитры для клипа
-                absolute_start_time = start_time
-                absolute_end_time = start_time + clip_duration
-                
-                # Получаем субтитры, которые пересекаются с временным отрезком клипа
-                clip_subtitles = []
-                for seg in subtitles:
-                    # Проверяем пересечение временных интервалов
-                    if seg['end'] > absolute_start_time and seg['start'] < absolute_end_time:
-                        clip_subtitles.append(seg)
-                
-                print(f"   📝 Найдено {len(clip_subtitles)} субтитров для клипа {i+1}")
+                # Получаем субтитры для этого временного отрезка
+                clip_subtitles = [
+                    seg for seg in subtitles 
+                    if seg['start'] >= start_time and seg['end'] <= start_time + clip_duration
+                ]
                 
                 task = self._create_single_clip_async(
                     video_path, clip_path, start_time, clip_duration,
@@ -351,11 +366,12 @@ class VideoProcessor:
         
         def create_clip():
             try:
-                # Используем video_editor для создания клипа
-                success = asyncio.run(self.video_editor.create_clip(
+                # Используем video_editor для создания клипа.
+                # Теперь это обычная функция, ее можно вызывать напрямую
+                success = self.video_editor.create_clip(
                     video_path, clip_path, start_time, duration,
                     title, subtitle, subtitles
-                ))
+                )
                 return clip_path if success else None
             except Exception as e:
                 print(f"⚠️ Ошибка создания клипа {clip_index+1}: {e}")
@@ -406,18 +422,11 @@ class VideoProcessor:
                 
                 print(f"Создаем клип {i+1}/{clip_count}, начало: {start_time}с, длительность: {clip_duration}с")
                 
-                # ИСПРАВЛЕНИЕ: Правильно фильтруем субтитры для клипа
-                absolute_start_time = start_time
-                absolute_end_time = start_time + clip_duration
-                
-                # Получаем субтитры, которые пересекаются с временным отрезком клипа
-                clip_subtitles = []
-                for seg in subtitles:
-                    # Проверяем пересечение временных интервалов
-                    if seg['end'] > absolute_start_time and seg['start'] < absolute_end_time:
-                        clip_subtitles.append(seg)
-                
-                print(f"   📝 Найдено {len(clip_subtitles)} субтитров для клипа {i+1}")
+                # Получаем субтитры для этого временного отрезка
+                clip_subtitles = [
+                    seg for seg in subtitles 
+                    if seg['start'] >= start_time and seg['end'] <= start_time + clip_duration
+                ]
                 
                 # Создаем клип с эффектами
                 success = await self.video_editor.create_clip(
@@ -475,7 +484,7 @@ class VideoProcessor:
         def upload_clip():
             try:
                 # Используем синхронную версию загрузки в отдельном потоке
-                link = asyncio.run(self.drive_uploader.upload_file(clip_path, f"clip_{fragment_number}.mp4"))
+                link = self.drive_uploader.upload_file(clip_path, f"clip_{fragment_number}.mp4")
                 return {
                     'fragment': fragment_number,
                     'link': link

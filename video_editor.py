@@ -15,7 +15,7 @@ class VideoEditor:
             # Используем системный шрифт как fallback
             self.font_path = "arial"
         
-    async def create_clip(self, input_video, output_path, start_time, duration, title, subtitle, subtitles):
+    def create_clip(self, input_video, output_path, start_time, duration, title, subtitle, subtitles):
         """Создание клипа с эффектами"""
         temp_dir = None
         try:
@@ -26,32 +26,31 @@ class VideoEditor:
             # 1. Извлекаем сегмент видео
             segment_path = os.path.join(temp_dir, "segment.mp4")
             print("Шаг 1: Извлечение сегмента...")
-            await self._extract_segment(input_video, segment_path, start_time, duration)
+            self._extract_segment(input_video, segment_path, start_time, duration)
             
             # 2. Создаем фоновое видео с блюром
             blurred_bg_path = os.path.join(temp_dir, "blurred_bg.mp4")
             print("Шаг 2: Создание размытого фона...")
-            await self._create_blurred_background(segment_path, blurred_bg_path)
+            self._create_blurred_background(segment_path, blurred_bg_path)
             
             # 3. Создаем основное видео по центру
             centered_video_path = os.path.join(temp_dir, "centered.mp4")
             print("Шаг 3: Создание центрированного видео...")
-            await self._create_centered_video(segment_path, centered_video_path)
+            self._create_centered_video(segment_path, centered_video_path)
             
             # 4. Накладываем основное видео на фон
             combined_path = os.path.join(temp_dir, "combined.mp4")
             print("Шаг 4: Наложение видео на фон...")
-            await self._overlay_videos(blurred_bg_path, centered_video_path, combined_path)
+            self._overlay_videos(blurred_bg_path, centered_video_path, combined_path)
             
             # 5. Добавляем заголовки
             with_titles_path = os.path.join(temp_dir, "with_titles.mp4")
             print("Шаг 5: Добавление заголовков...")
-            await self._add_titles(combined_path, with_titles_path, title, subtitle)
+            self._add_titles(combined_path, with_titles_path, title, subtitle)
             
             # 6. Добавляем субтитры с анимацией
             print("Шаг 6: Добавление субтитров...")
-            print(f"🎯 Передаем start_time={start_time} для корректировки субтитров")
-            await self._add_animated_subtitles(with_titles_path, output_path, subtitles, start_time)
+            self._add_animated_subtitles(with_titles_path, output_path, subtitles, start_time)
             
             # Проверяем, что файл создался
             if os.path.exists(output_path):
@@ -76,7 +75,7 @@ class VideoEditor:
                 shutil.rmtree(temp_dir, ignore_errors=True)
                 print(f"Удалена промежуточная временная директория: {temp_dir}")
     
-    async def _extract_segment(self, input_video, output_path, start_time, duration):
+    def _extract_segment(self, input_video, output_path, start_time, duration):
         """Извлечение сегмента видео"""
         cmd = [
             'ffmpeg', '-i', input_video,
@@ -93,7 +92,7 @@ class VideoEditor:
             raise Exception(f"FFmpeg failed: {result.stderr}")
         print("Сегмент извлечен успешно")
     
-    async def _create_blurred_background(self, input_video, output_path):
+    def _create_blurred_background(self, input_video, output_path):
         """Создание размытого фона на весь экран"""
         cmd = [
             'ffmpeg', '-i', input_video,
@@ -108,7 +107,7 @@ class VideoEditor:
             raise Exception(f"FFmpeg failed: {result.stderr}")
         print("Размытый фон создан успешно")
     
-    async def _create_centered_video(self, input_video, output_path):
+    def _create_centered_video(self, input_video, output_path):
         """Создание центрированного видео с сохранением пропорций и обрезкой"""
         cmd = [
             'ffmpeg', '-i', input_video,
@@ -123,7 +122,7 @@ class VideoEditor:
             raise Exception(f"FFmpeg failed: {result.stderr}")
         print("Центрированное видео с обрезкой создано успешно")
     
-    async def _overlay_videos(self, background_path, overlay_path, output_path):
+    def _overlay_videos(self, background_path, overlay_path, output_path):
         """Наложение одного видео на другое по центру с отступом"""
         cmd = [
             'ffmpeg', '-i', background_path, '-i', overlay_path,
@@ -138,7 +137,7 @@ class VideoEditor:
             raise Exception(f"FFmpeg failed: {result.stderr}")
         print("Наложение видео выполнено успешно")
     
-    async def _add_titles(self, input_video, output_path, title, subtitle):
+    def _add_titles(self, input_video, output_path, title, subtitle):
         """Добавление заголовков"""
         try:
             # Используем шрифт Obelix Pro
@@ -194,7 +193,7 @@ class VideoEditor:
                     print("Не удалось добавить заголовки даже с системным шрифтом")
                     import shutil
                     shutil.copy2(input_video, output_path)
-                    print("Заголовки пропущены, файл скопирован без изменений")
+                    print("Заголовки пропущены из-за ошибки")
                 else:
                     print("Заголовки добавлены с системным шрифтом")
             else:
@@ -207,8 +206,8 @@ class VideoEditor:
             import shutil
             shutil.copy2(input_video, output_path)
 
-    async def _add_animated_subtitles(self, input_video, output_path, subtitles, start_offset):
-        """Добавление анимированных субтитров с правильной синхронизацией"""
+    def _add_animated_subtitles(self, input_video, output_path, subtitles, start_offset):
+        """Добавление анимированных субтитров"""
         try:
             # Экранируем путь к шрифту для FFmpeg
             path = self.font_path.replace('\\', '/')
@@ -220,68 +219,45 @@ class VideoEditor:
                 shutil.copy2(input_video, output_path)
                 return
             
-            print(f"🎬 Добавляем субтитры с правильной синхронизацией")
-            print(f"📍 Смещение клипа: {start_offset:.2f} секунд")
+            print(f"Добавляем {len(subtitles)} субтитров с анимацией подпрыгивания")
             
-            # Создаем фильтры для анимированных субтитров
+            # Создаем фильтры для анимированных субтитров по одному слову
             subtitle_filters = []
-            valid_segments = 0
             
             for i, segment in enumerate(subtitles):
-                # ИСПРАВЛЕНИЕ: Правильно корректируем время относительно начала клипа
-                original_start = segment['start']
-                original_end = segment['end']
-                
-                # Время в клипе = время в оригинале - смещение начала клипа
-                clip_start = original_start - start_offset
-                clip_end = original_end - start_offset
-                
-                print(f"📝 Сегмент {i+1}: оригинал {original_start:.1f}-{original_end:.1f}s → клип {clip_start:.1f}-{clip_end:.1f}s")
+                # Корректируем время относительно начала клипа
+                start_time = segment['start'] - start_offset
+                end_time = segment['end'] - start_offset
                 
                 # Пропускаем субтитры, которые не попадают в клип
-                if clip_end <= 0:
-                    print(f"   ⏭️ Пропускаем: заканчивается до начала клипа")
+                if start_time < 0:
+                    start_time = 0
+                if end_time <= 0:
                     continue
-                if clip_start >= 30:  # Максимальная длительность клипа
-                    print(f"   ⏭️ Пропускаем: начинается после конца клипа")
+                if start_time >= 30:  # Максимальная длительность клипа
                     break
-                
-                # Обрезаем субтитры по границам клипа
-                if clip_start < 0:
-                    clip_start = 0
-                    print(f"   ✂️ Обрезаем начало до 0")
-                if clip_end > 30:
-                    clip_end = 30
-                    print(f"   ✂️ Обрезаем конец до 30")
-                
-                # Проверяем, что осталось валидное время
-                if clip_end <= clip_start:
-                    print(f"   ❌ Пропускаем: некорректное время")
-                    continue
+                if end_time > 30:
+                    end_time = 30
                 
                 # Очищаем текст
                 text = segment['text'].strip()
                 if not text:
-                    print(f"   ❌ Пропускаем: пустой текст")
                     continue
                 
                 # Разбиваем текст на слова
                 words = text.split()
                 if not words:
-                    print(f"   ❌ Пропускаем: нет слов")
                     continue
                 
-                valid_segments += 1
-                
                 # Вычисляем время для каждого слова
-                segment_duration = clip_end - clip_start
-                word_duration = segment_duration / len(words)
+                segment_duration = end_time - start_time
+                word_duration = segment_duration / len(words) if len(words) > 0 else segment_duration
                 
-                print(f"   ✅ '{text}' → {len(words)} слов, длительность {segment_duration:.1f}s")
+                print(f"Сегмент {i+1}: '{text}' -> {len(words)} слов ({start_time:.1f}s - {end_time:.1f}s)")
                 
                 # Создаем субтитр для каждого слова
                 for word_idx, word in enumerate(words):
-                    word_start = clip_start + (word_idx * word_duration)
+                    word_start = start_time + (word_idx * word_duration)
                     word_end = word_start + word_duration
                     
                     # Экранируем слово для FFmpeg
@@ -290,7 +266,7 @@ class VideoEditor:
                     if not word_safe:
                         continue
                     
-                    print(f"      🔤 '{word_safe}' ({word_start:.1f}s - {word_end:.1f}s)")
+                    print(f"  Слово {word_idx+1}: '{word_safe}' ({word_start:.1f}s - {word_end:.1f}s)")
                     
                     # Создаем анимацию подпрыгивания для каждого слова
                     bounce_filter = (
@@ -299,8 +275,6 @@ class VideoEditor:
                         f"y=h-400+20*sin(2*PI*t):enable='between(t,{word_start:.2f},{word_end:.2f})'"
                     )
                     subtitle_filters.append(bounce_filter)
-            
-            print(f"🎯 Обработано {valid_segments} валидных сегментов из {len(subtitles)}")
             
             if subtitle_filters:
                 # Объединяем все фильтры субтитров
