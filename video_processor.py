@@ -4,8 +4,11 @@ import subprocess
 import tempfile
 import shutil
 from pathlib import Path
+import concurrent.futures
+from multiprocessing import cpu_count
 import yt_dlp
 import whisper
+import torch
 from google_drive_uploader import GoogleDriveUploader
 from video_editor import VideoEditor
 
@@ -13,10 +16,22 @@ class VideoProcessor:
     def __init__(self):
         self.drive_uploader = GoogleDriveUploader()
         self.video_editor = VideoEditor()
-        self.whisper_model = whisper.load_model("base")
+        
+        # Оптимизация для Colab
+        self.max_workers = min(cpu_count(), 8)  # Ограничиваем до 8 потоков
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        
+        # Загружаем Whisper модель на GPU если доступно
+        print(f"Используем устройство: {self.device}")
+        print(f"Максимум потоков: {self.max_workers}")
+        
+        # Используем более быструю модель для Colab
+        model_size = "small" if self.device == "cuda" else "tiny"
+        self.whisper_model = whisper.load_model(model_size, device=self.device)
+        print(f"Загружена Whisper модель: {model_size}")
         
     async def process_video(self, video_path, duration, title, subtitle, user_id):
-        """Основная функция обработки видео"""
+        """Основная функция обработки видео с параллельной обработкой"""
         temp_dir = f"temp_{user_id}"
         try:
             # Создаем временную директорию для пользователя
@@ -26,30 +41,44 @@ class VideoProcessor:
             video_info = self._get_video_info(video_path)
             video_duration = video_info['duration']
             
-            # Если видео длинное, разбиваем на чанки по 5 минут
+            print(f"🎬 Обрабатываем видео длительностью {video_duration:.1f} секунд")
+            
+            # Оптимизированная разбивка на чанки для Colab
+            chunk_duration = min(180, video_duration / 2)  # 3 минуты или половина видео
             chunks = []
-            if video_duration > 300:  # 5 минут
-                chunks = await self._split_video_to_chunks(video_path, temp_dir)
+            
+            if video_duration > chunk_duration:
+                chunks = await self._split_video_to_chunks_parallel(video_path, temp_dir, chunk_duration)
             else:
                 chunks = [video_path]
             
+            print(f"📦 Создано {len(chunks)} чанков для обработки")
+            
+            # ПАРАЛЛЕЛЬНАЯ обработка чанков
             all_clips = []
+            chunk_tasks = []
             
-            # Обрабатываем каждый чанк
+            # Создаем задачи для параллельной обработки чанков
             for i, chunk_path in enumerate(chunks):
-                print(f"Обрабатываем чанк {i+1}/{len(chunks)}")
-                
-                # Генерируем субтитры для чанка
-                subtitles = await self._generate_subtitles(chunk_path)
-                
-                # Нарезаем чанк на клипы
-                clips = await self._create_clips(
-                    chunk_path, duration, title, subtitle, subtitles, temp_dir, i
-                )
-                all_clips.extend(clips)
+                task = self._process_chunk_parallel(chunk_path, duration, title, subtitle, temp_dir, i)
+                chunk_tasks.append(task)
             
-            # Загружаем клипы на Google Drive
-            uploaded_links_file = await self._upload_clips_to_drive(all_clips)
+            # Выполняем все чанки параллельно
+            print(f"🚀 Запускаем параллельную обработку {len(chunk_tasks)} чанков...")
+            chunk_results = await asyncio.gather(*chunk_tasks, return_exceptions=True)
+            
+            # Собираем результаты
+            for i, result in enumerate(chunk_results):
+                if isinstance(result, Exception):
+                    print(f"❌ Ошибка обработки чанка {i}: {result}")
+                else:
+                    all_clips.extend(result)
+                    print(f"✅ Чанк {i+1} обработан: {len(result)} клипов")
+            
+            print(f"🎯 Всего создано {len(all_clips)} клипов")
+            
+            # ПАРАЛЛЕЛЬНАЯ загрузка на Google Drive
+            uploaded_links_file = await self._upload_clips_to_drive_parallel(all_clips)
             
             # Создаем файл со ссылками
             links_file = await self._create_links_file(uploaded_links_file, user_id)
@@ -61,7 +90,7 @@ class VideoProcessor:
             }
             
         except Exception as e:
-            print(f"Критическая ошибка в process_video: {e}")
+            print(f"💥 Критическая ошибка в process_video: {e}")
             import traceback
             traceback.print_exc()
             return {'success': False, 'error': str(e)}
@@ -69,7 +98,7 @@ class VideoProcessor:
             # Гарантированно удаляем временную директорию
             if os.path.exists(temp_dir):
                 shutil.rmtree(temp_dir, ignore_errors=True)
-                print(f"Удалена временная директория: {temp_dir}")
+                print(f"🧹 Удалена временная директория: {temp_dir}")
     
     async def process_youtube_video(self, url, duration, title, subtitle, user_id):
         """Обработка видео с YouTube"""
@@ -147,44 +176,188 @@ class VideoProcessor:
         except (json.JSONDecodeError, KeyError, ValueError) as e:
             raise Exception(f"Ошибка парсинга информации о видео: {e}")
     
-    async def _split_video_to_chunks(self, video_path, temp_dir):
-        """Разбивка видео на чанки по 5 минут"""
-        chunks = []
-        chunk_duration = 300  # 5 минут
-        
+    async def _split_video_to_chunks_parallel(self, video_path, temp_dir, chunk_duration):
+        """ПАРАЛЛЕЛЬНАЯ разбивка видео на чанки"""
         video_info = self._get_video_info(video_path)
         total_duration = video_info['duration']
         
         chunk_count = int(total_duration // chunk_duration) + 1
-        print(f"Разбиваем видео на {chunk_count} чанков по {chunk_duration} секунд")
+        print(f"⚡ ПАРАЛЛЕЛЬНАЯ разбивка на {chunk_count} чанков по {chunk_duration} секунд")
         
+        # Создаем задачи для параллельного создания чанков
+        chunk_tasks = []
         for i in range(chunk_count):
             start_time = i * chunk_duration
             chunk_path = os.path.join(temp_dir, f"chunk_{i}.mp4")
-            
+            task = self._create_chunk_async(video_path, chunk_path, start_time, chunk_duration, i, chunk_count)
+            chunk_tasks.append(task)
+        
+        # Выполняем все задачи параллельно
+        chunk_results = await asyncio.gather(*chunk_tasks, return_exceptions=True)
+        
+        # Собираем успешные чанки
+        chunks = []
+        for i, result in enumerate(chunk_results):
+            if isinstance(result, Exception):
+                print(f"❌ Ошибка создания чанка {i}: {result}")
+            elif result:
+                chunks.append(result)
+                print(f"✅ Чанк {i+1} создан")
+        
+        print(f"🎯 Создано {len(chunks)} чанков параллельно")
+        return chunks
+    
+    async def _create_chunk_async(self, video_path, chunk_path, start_time, duration, index, total):
+        """Асинхронное создание одного чанка"""
+        loop = asyncio.get_event_loop()
+        
+        def create_chunk():
             cmd = [
                 'ffmpeg', '-i', video_path,
                 '-ss', str(start_time),
-                '-t', str(chunk_duration),
+                '-t', str(duration),
                 '-c', 'copy',
-                chunk_path, '-y'
+                chunk_path, '-y',
+                '-loglevel', 'error'  # Уменьшаем вывод логов
             ]
             
-            print(f"Создаем чанк {i+1}/{chunk_count}: {chunk_path}")
             result = subprocess.run(cmd, capture_output=True, text=True)
             
-            if result.returncode != 0:
-                print(f"Ошибка создания чанка {i}: {result.stderr}")
-                continue
-            
-            if os.path.exists(chunk_path) and os.path.getsize(chunk_path) > 0:
-                chunks.append(chunk_path)
-                print(f"Чанк {i+1} создан успешно")
+            if result.returncode == 0 and os.path.exists(chunk_path) and os.path.getsize(chunk_path) > 0:
+                return chunk_path
             else:
-                print(f"Чанк {i+1} не создался или пустой")
+                print(f"⚠️ Ошибка создания чанка {index+1}: {result.stderr}")
+                return None
         
-        print(f"Создано {len(chunks)} чанков")
-        return chunks
+        # Выполняем в отдельном потоке
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            result = await loop.run_in_executor(executor, create_chunk)
+            return result
+    
+    async def _process_chunk_parallel(self, chunk_path, duration, title, subtitle, temp_dir, chunk_index):
+        """ПАРАЛЛЕЛЬНАЯ обработка одного чанка"""
+        try:
+            print(f"🔄 Обрабатываем чанк {chunk_index+1}...")
+            
+            # Генерируем субтитры асинхронно
+            subtitles_task = self._generate_subtitles_async(chunk_path)
+            
+            # Получаем информацию о видео
+            video_info = self._get_video_info(chunk_path)
+            total_duration = video_info['duration']
+            
+            # Ждем субтитры
+            subtitles = await subtitles_task
+            
+            # Создаем клипы параллельно
+            clips = await self._create_clips_parallel(
+                chunk_path, duration, title, subtitle, subtitles, temp_dir, chunk_index, total_duration
+            )
+            
+            return clips
+            
+        except Exception as e:
+            print(f"💥 Ошибка обработки чанка {chunk_index}: {e}")
+            return []
+    
+    async def _generate_subtitles_async(self, video_path):
+        """Асинхронная генерация субтитров"""
+        loop = asyncio.get_event_loop()
+        
+        def generate():
+            try:
+                # Используем fp16 для ускорения на GPU
+                result = self.whisper_model.transcribe(
+                    video_path,
+                    fp16=self.device == "cuda",
+                    language="ru"  # Указываем язык для ускорения
+                )
+                return result['segments']
+            except Exception as e:
+                print(f"⚠️ Ошибка генерации субтитров: {e}")
+                return []
+        
+        # Выполняем в отдельном потоке для GPU операций
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            result = await loop.run_in_executor(executor, generate)
+            return result
+    
+    async def _create_clips_parallel(self, video_path, duration, title, subtitle, subtitles, temp_dir, chunk_index, total_duration):
+        """ПАРАЛЛЕЛЬНОЕ создание клипов из чанка"""
+        clips = []
+        
+        try:
+            # Вычисляем количество клипов
+            if total_duration <= duration:
+                clip_count = 1
+                actual_duration = total_duration
+            else:
+                clip_count = int(total_duration // duration)
+                actual_duration = duration
+            
+            print(f"🎬 Создаем {clip_count} клипов из чанка {chunk_index+1}")
+            
+            # Создаем задачи для параллельного создания клипов
+            clip_tasks = []
+            for i in range(clip_count):
+                start_time = i * duration
+                clip_path = os.path.join(temp_dir, f"clip_{chunk_index}_{i}.mp4")
+                
+                clip_duration = actual_duration if total_duration <= duration else duration
+                
+                # Получаем субтитры для этого временного отрезка
+                clip_subtitles = [
+                    seg for seg in subtitles 
+                    if seg['start'] >= start_time and seg['end'] <= start_time + clip_duration
+                ]
+                
+                task = self._create_single_clip_async(
+                    video_path, clip_path, start_time, clip_duration,
+                    title, subtitle, clip_subtitles, i, clip_count
+                )
+                clip_tasks.append(task)
+            
+            # Выполняем все клипы параллельно (но ограничиваем количество одновременных задач)
+            batch_size = min(4, self.max_workers)  # Не более 4 клипов одновременно
+            
+            for i in range(0, len(clip_tasks), batch_size):
+                batch = clip_tasks[i:i + batch_size]
+                batch_results = await asyncio.gather(*batch, return_exceptions=True)
+                
+                for j, result in enumerate(batch_results):
+                    if isinstance(result, Exception):
+                        print(f"❌ Ошибка создания клипа {i+j+1}: {result}")
+                    elif result:
+                        clips.append(result)
+                        print(f"✅ Клип {i+j+1} создан")
+            
+            print(f"🎯 Чанк {chunk_index+1}: создано {len(clips)} клипов")
+            return clips
+            
+        except Exception as e:
+            print(f"💥 Ошибка в _create_clips_parallel: {e}")
+            return clips
+    
+    async def _create_single_clip_async(self, video_path, clip_path, start_time, duration, title, subtitle, subtitles, clip_index, total_clips):
+        """Асинхронное создание одного клипа"""
+        loop = asyncio.get_event_loop()
+        
+        def create_clip():
+            try:
+                # Используем video_editor для создания клипа
+                success = asyncio.run(self.video_editor.create_clip(
+                    video_path, clip_path, start_time, duration,
+                    title, subtitle, subtitles
+                ))
+                return clip_path if success else None
+            except Exception as e:
+                print(f"⚠️ Ошибка создания клипа {clip_index+1}: {e}")
+                return None
+        
+        # Выполняем в отдельном потоке
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            result = await loop.run_in_executor(executor, create_clip)
+            return result
     
     async def _generate_subtitles(self, video_path):
         """Генерация субтитров с помощью Whisper"""
@@ -251,8 +424,59 @@ class VideoProcessor:
             print(f"Ошибка в _create_clips: {e}")
             return clips
     
+    async def _upload_clips_to_drive_parallel(self, clips):
+        """ПАРАЛЛЕЛЬНАЯ загрузка клипов на Google Drive"""
+        print(f"📤 Начинаем параллельную загрузку {len(clips)} клипов на Google Drive...")
+        
+        # Создаем задачи для параллельной загрузки
+        upload_tasks = []
+        for i, clip_path in enumerate(clips):
+            task = self._upload_single_clip_async(clip_path, i + 1)
+            upload_tasks.append(task)
+        
+        # Выполняем загрузку батчами (не более 3 одновременно для стабильности)
+        batch_size = 3
+        uploaded_links = []
+        
+        for i in range(0, len(upload_tasks), batch_size):
+            batch = upload_tasks[i:i + batch_size]
+            print(f"📤 Загружаем батч {i//batch_size + 1}/{(len(upload_tasks) + batch_size - 1)//batch_size}")
+            
+            batch_results = await asyncio.gather(*batch, return_exceptions=True)
+            
+            for j, result in enumerate(batch_results):
+                if isinstance(result, Exception):
+                    print(f"❌ Ошибка загрузки клипа {i+j+1}: {result}")
+                elif result:
+                    uploaded_links.append(result)
+                    print(f"✅ Клип {i+j+1} загружен")
+        
+        print(f"🎯 Загружено {len(uploaded_links)} клипов на Google Drive")
+        return uploaded_links
+    
+    async def _upload_single_clip_async(self, clip_path, fragment_number):
+        """Асинхронная загрузка одного клипа"""
+        loop = asyncio.get_event_loop()
+        
+        def upload_clip():
+            try:
+                # Используем синхронную версию загрузки в отдельном потоке
+                link = asyncio.run(self.drive_uploader.upload_file(clip_path, f"clip_{fragment_number}.mp4"))
+                return {
+                    'fragment': fragment_number,
+                    'link': link
+                }
+            except Exception as e:
+                print(f"⚠️ Ошибка загрузки клипа {fragment_number}: {e}")
+                return None
+        
+        # Выполняем в отдельном потоке
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            result = await loop.run_in_executor(executor, upload_clip)
+            return result
+    
     async def _upload_clips_to_drive(self, clips):
-        """Загрузка клипов на Google Drive"""
+        """Загрузка клипов на Google Drive (старый метод для совместимости)"""
         uploaded_links = []
         
         for i, clip_path in enumerate(clips):

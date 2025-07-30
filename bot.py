@@ -30,7 +30,8 @@ class TelegramBot:
             "Команды:\n"
             "/duration <секунды> - установить длительность шотсов (по умолчанию 30 сек)\n"
             "/title <заголовок> - установить заголовок\n"
-            "/subtitle <подзаголовок> - установить подзаголовок"
+            "/subtitle <подзаголовок> - установить подзаголовок\n"
+            "/cookies - установить cookies для доступа к приватным видео"
         )
     
     async def set_duration(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -60,9 +61,45 @@ class TelegramBot:
         else:
             await update.message.reply_text("Использование: /subtitle <текст подзаголовка>")
     
+    async def set_cookies(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Установка cookies для yt-dlp"""
+        await update.message.reply_text(
+            "Отправьте содержимое cookies файла в следующем сообщении.\n\n"
+            "Cookies должны быть в формате Netscape или JSON.\n"
+            "Например, экспортированные из браузера через расширение."
+        )
+        context.user_data['waiting_for_cookies'] = True
+    
+    async def process_cookies(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка cookies файла"""
+        try:
+            cookies_content = update.message.text
+            
+            # Сохраняем cookies в файл
+            with open('cookies.txt', 'w', encoding='utf-8') as f:
+                f.write(cookies_content)
+            
+            await update.message.reply_text(
+                "✅ Cookies файл сохранен!\n"
+                "Теперь можно скачивать видео с ограниченным доступом."
+            )
+            
+            # Сбрасываем флаг ожидания
+            context.user_data['waiting_for_cookies'] = False
+            
+        except Exception as e:
+            logger.error(f"Ошибка сохранения cookies: {e}")
+            await update.message.reply_text(f"❌ Ошибка сохранения cookies: {str(e)}")
+            context.user_data['waiting_for_cookies'] = False
+    
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка сообщений"""
         message = update.message
+        
+        # Проверяем, ждем ли мы cookies
+        if context.user_data.get('waiting_for_cookies'):
+            await self.process_cookies(update, context)
+            return
         
         # Проверяем, есть ли видео файл
         if message.video:
@@ -142,6 +179,7 @@ class TelegramBot:
         application.add_handler(CommandHandler("duration", self.set_duration))
         application.add_handler(CommandHandler("title", self.set_title))
         application.add_handler(CommandHandler("subtitle", self.set_subtitle))
+        application.add_handler(CommandHandler("cookies", self.set_cookies))
         application.add_handler(MessageHandler(filters.ALL, self.handle_message))
         
         # Запускаем бота
