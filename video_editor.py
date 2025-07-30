@@ -147,10 +147,25 @@ class VideoEditor:
     
     def _create_styled_clip_sync(self, input_path: str, output_path: str, start_time: float,
                                duration: float, subtitles: list, clip_number: int, config: dict = None):
-        """Синхронное создание стилизованного клипа"""
+        """Синхронное создание стилизованного клипа с GPU ускорением"""
         
-        # Основное видео
-        main_video = ffmpeg.input(input_path, ss=start_time, t=duration)
+        # Проверяем доступность GPU
+        gpu_available = self._check_gpu_support()
+        
+        if gpu_available:
+            # GPU ускоренный ввод
+            main_video = ffmpeg.input(
+                input_path, 
+                ss=start_time, 
+                t=duration,
+                hwaccel='cuda',
+                hwaccel_output_format='cuda'
+            )
+            logger.info(f"🎮 Используем GPU для создания клипа {clip_number}")
+        else:
+            # Обычный CPU ввод
+            main_video = ffmpeg.input(input_path, ss=start_time, t=duration)
+            logger.info(f"💻 Используем CPU для создания клипа {clip_number}")
         
         # Создаем размытый фон (растягиваем на весь экран)
         blurred_bg = (
@@ -300,23 +315,45 @@ class VideoEditor:
         # Аудио
         audio = main_video.audio
         
-        # Финальный вывод с принудительным форматом 9:16 и улучшенным качеством
-        (
-            ffmpeg
-            .output(final_video, audio, output_path, 
-                   vcodec='libx264', 
-                   acodec='aac',
-                   preset='slow',      # Медленнее, но лучше качество
-                   crf=18,            # Лучше качество (было 23)
-                   pix_fmt='yuv420p', # Совместимость
-                   s='1080x1920',     # ПРИНУДИТЕЛЬНО 9:16 формат
-                   **{'b:v': '8M',    # Битрейт видео 8 Мбит/с
-                      'b:a': '192k',  # Битрейт аудио 192 кбит/с
-                      'maxrate': '10M', # Максимальный битрейт
-                      'bufsize': '16M'}) # Размер буфера
-            .overwrite_output()
-            .run(quiet=True)
-        )
+        # Финальный вывод с GPU/CPU кодировщиком
+        if gpu_available:
+            # GPU ускоренный вывод (NVIDIA NVENC)
+            (
+                ffmpeg
+                .output(final_video, audio, output_path, 
+                       vcodec='h264_nvenc',    # GPU кодировщик NVIDIA
+                       acodec='aac',
+                       preset='fast',          # Быстрый пресет для GPU
+                       cq=18,                  # Качество для NVENC (аналог CRF)
+                       pix_fmt='yuv420p',      # Совместимость
+                       s='1080x1920',          # ПРИНУДИТЕЛЬНО 9:16 формат
+                       **{'b:v': '8M',         # Битрейт видео 8 Мбит/с
+                          'b:a': '192k',       # Битрейт аудио 192 кбит/с
+                          'maxrate': '10M',    # Максимальный битрейт
+                          'bufsize': '16M'})   # Размер буфера
+                .overwrite_output()
+                .run(quiet=True)
+            )
+            logger.info(f"🎮 Клип {clip_number} создан с GPU ускорением")
+        else:
+            # CPU вывод (обычный)
+            (
+                ffmpeg
+                .output(final_video, audio, output_path, 
+                       vcodec='libx264',       # CPU кодировщик
+                       acodec='aac',
+                       preset='fast',          # Быстрый пресет для CPU
+                       crf=18,                 # Качество для CPU
+                       pix_fmt='yuv420p',      # Совместимость
+                       s='1080x1920',          # ПРИНУДИТЕЛЬНО 9:16 формат
+                       **{'b:v': '8M',         # Битрейт видео 8 Мбит/с
+                          'b:a': '192k',       # Битрейт аудио 192 кбит/с
+                          'maxrate': '10M',    # Максимальный битрейт
+                          'bufsize': '16M'})   # Размер буфера
+                .overwrite_output()
+                .run(quiet=True)
+            )
+            logger.info(f"💻 Клип {clip_number} создан с CPU")
     
     def _add_animated_subtitles(self, video, subtitles: list, start_time: float, duration: float):
         """Добавление анимированных субтитров"""
@@ -360,3 +397,26 @@ class VideoEditor:
             )
         
         return result_video
+    
+    def _check_gpu_support(self) -> bool:
+        """Проверка поддержки GPU для ffmpeg"""
+        try:
+            import subprocess
+            
+            # Проверяем наличие NVIDIA GPU
+            result = subprocess.run(['nvidia-smi'], capture_output=True, text=True, check=False)
+            if result.returncode != 0:
+                return False
+            
+            # Проверяем поддержку NVENC в ffmpeg
+            result = subprocess.run(['ffmpeg', '-encoders'], capture_output=True, text=True, check=False)
+            if 'h264_nvenc' in result.stdout:
+                logger.info("✅ GPU поддержка (NVENC) доступна для создания клипов")
+                return True
+            else:
+                logger.info("❌ GPU поддержка (NVENC) недоступна для создания клипов")
+                return False
+                
+        except Exception as e:
+            logger.warning(f"Ошибка проверки GPU: {e}")
+            return False

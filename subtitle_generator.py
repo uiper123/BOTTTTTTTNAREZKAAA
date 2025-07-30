@@ -52,25 +52,40 @@ class SubtitleGenerator:
                 self.whisper_available = False
     
     def _load_model(self):
-        """Ленивая загрузка модели с проверкой доступности"""
+        """Ленивая загрузка модели с проверкой доступности и GPU"""
         if not self.whisper_available:
             logger.error("Whisper недоступен, субтитры не будут созданы")
             return False
             
         if self.model is None:
             try:
+                # Проверяем доступность GPU
+                gpu_available = self._check_gpu_support()
+                
                 logger.info(f"Загрузка модели Whisper: {self.model_name}")
                 
                 if hasattr(self, 'use_faster_whisper'):
-                    # Используем faster-whisper
+                    # Используем faster-whisper с GPU поддержкой
                     from faster_whisper import WhisperModel
-                    self.model = WhisperModel(self.model_name)
+                    if gpu_available:
+                        self.model = WhisperModel(self.model_name, device="cuda", compute_type="float16")
+                        logger.info("🎮 faster-whisper загружен с GPU ускорением")
+                    else:
+                        self.model = WhisperModel(self.model_name, device="cpu")
+                        logger.info("💻 faster-whisper загружен на CPU")
                 elif hasattr(self, 'use_whisper_jax'):
-                    # Используем whisper-jax
+                    # Используем whisper-jax (автоматически использует GPU если доступен)
                     self.model = self.whisper.load_model(self.model_name)
+                    logger.info("🎮 whisper-jax загружен (автоматическое GPU)")
                 else:
                     # Используем обычный OpenAI Whisper
-                    self.model = self.whisper.load_model(self.model_name)
+                    import torch
+                    if gpu_available and torch.cuda.is_available():
+                        self.model = self.whisper.load_model(self.model_name, device="cuda")
+                        logger.info("🎮 OpenAI Whisper загружен с GPU ускорением")
+                    else:
+                        self.model = self.whisper.load_model(self.model_name, device="cpu")
+                        logger.info("💻 OpenAI Whisper загружен на CPU")
                     
                 logger.info("✅ Модель Whisper загружена успешно")
                 return True
@@ -81,6 +96,35 @@ class SubtitleGenerator:
                 return False
         
         return True
+    
+    def _check_gpu_support(self) -> bool:
+        """Проверка поддержки GPU для Whisper"""
+        try:
+            import subprocess
+            
+            # Проверяем наличие NVIDIA GPU
+            result = subprocess.run(['nvidia-smi'], capture_output=True, text=True, check=False)
+            if result.returncode != 0:
+                logger.info("❌ NVIDIA GPU не найден")
+                return False
+            
+            # Проверяем PyTorch CUDA
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    gpu_name = torch.cuda.get_device_name(0)
+                    logger.info(f"✅ GPU доступен для Whisper: {gpu_name}")
+                    return True
+                else:
+                    logger.info("❌ PyTorch CUDA недоступен")
+                    return False
+            except ImportError:
+                logger.info("❌ PyTorch не установлен")
+                return False
+                
+        except Exception as e:
+            logger.warning(f"Ошибка проверки GPU для Whisper: {e}")
+            return False
     
     async def generate(self, video_path: str) -> list:
         """Генерация субтитров для видео"""

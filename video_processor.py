@@ -202,20 +202,42 @@ class VideoProcessor:
             return False
     
     def _create_chunk_direct_command(self, input_path: str, output_path: str, start_time: int, duration: int):
-        """Прямая команда ffmpeg для максимальной скорости (как в вашем примере)"""
+        """Прямая команда ffmpeg с GPU ускорением для максимальной скорости"""
         import subprocess
         
-        # Команда точно как в вашем примере, но с улучшениями
-        cmd = [
-            'ffmpeg',
-            '-ss', str(start_time),        # Время начала
-            '-i', input_path,              # Входной файл
-            '-t', str(duration),           # Длительность
-            '-c', 'copy',                  # Копирование без перекодирования (БЫСТРО!)
-            '-avoid_negative_ts', 'make_zero',  # Избегаем проблем с таймингом
-            '-y',                          # Перезаписывать без вопросов
-            output_path
-        ]
+        # Проверяем доступность GPU
+        gpu_available = self._check_gpu_support()
+        
+        if gpu_available:
+            # GPU ускоренная команда (NVIDIA)
+            cmd = [
+                'ffmpeg',
+                '-hwaccel', 'cuda',           # Аппаратное ускорение CUDA
+                '-hwaccel_output_format', 'cuda',  # Выходной формат CUDA
+                '-ss', str(start_time),       # Время начала
+                '-i', input_path,             # Входной файл
+                '-t', str(duration),          # Длительность
+                '-c:v', 'h264_nvenc',         # GPU кодировщик NVIDIA
+                '-c:a', 'copy',               # Аудио копируем
+                '-preset', 'fast',            # Быстрый пресет
+                '-avoid_negative_ts', 'make_zero',
+                '-y',                         # Перезаписывать без вопросов
+                output_path
+            ]
+            logger.info(f"🎮 Используем GPU для нарезки чанка")
+        else:
+            # Обычная CPU команда (как раньше)
+            cmd = [
+                'ffmpeg',
+                '-ss', str(start_time),        # Время начала
+                '-i', input_path,              # Входной файл
+                '-t', str(duration),           # Длительность
+                '-c', 'copy',                  # Копирование без перекодирования
+                '-avoid_negative_ts', 'make_zero',
+                '-y',                          # Перезаписывать без вопросов
+                output_path
+            ]
+            logger.info(f"💻 Используем CPU для нарезки чанка")
         
         # Запускаем команду
         result = subprocess.run(
@@ -227,7 +249,56 @@ class VideoProcessor:
         
         if result.returncode != 0:
             logger.error(f"Ошибка ffmpeg: {result.stderr}")
-            raise Exception(f"ffmpeg завершился с кодом {result.returncode}")
+            # Если GPU команда не сработала, пробуем CPU
+            if gpu_available:
+                logger.warning("GPU команда не сработала, пробуем CPU...")
+                return self._create_chunk_cpu_fallback(input_path, output_path, start_time, duration)
+            else:
+                raise Exception(f"ffmpeg завершился с кодом {result.returncode}")
+    
+    def _check_gpu_support(self) -> bool:
+        """Проверка поддержки GPU для ffmpeg"""
+        try:
+            import subprocess
+            
+            # Проверяем наличие NVIDIA GPU
+            result = subprocess.run(['nvidia-smi'], capture_output=True, text=True, check=False)
+            if result.returncode != 0:
+                return False
+            
+            # Проверяем поддержку NVENC в ffmpeg
+            result = subprocess.run(['ffmpeg', '-encoders'], capture_output=True, text=True, check=False)
+            if 'h264_nvenc' in result.stdout:
+                logger.info("✅ GPU поддержка (NVENC) доступна")
+                return True
+            else:
+                logger.info("❌ GPU поддержка (NVENC) недоступна")
+                return False
+                
+        except Exception as e:
+            logger.warning(f"Ошибка проверки GPU: {e}")
+            return False
+    
+    def _create_chunk_cpu_fallback(self, input_path: str, output_path: str, start_time: int, duration: int):
+        """Резервная CPU команда если GPU не работает"""
+        import subprocess
+        
+        cmd = [
+            'ffmpeg',
+            '-ss', str(start_time),
+            '-i', input_path,
+            '-t', str(duration),
+            '-c', 'copy',
+            '-avoid_negative_ts', 'make_zero',
+            '-y',
+            output_path
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        
+        if result.returncode != 0:
+            logger.error(f"Ошибка CPU fallback: {result.stderr}")
+            raise Exception(f"CPU fallback завершился с кодом {result.returncode}")
     
     async def _create_chunk_fast(self, task: dict) -> bool:
         """Быстрое создание одного чанка (старый метод через python-ffmpeg)"""
