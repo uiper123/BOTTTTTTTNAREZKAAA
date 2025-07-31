@@ -62,32 +62,77 @@ class VideoProcessor:
             # 2. Если видео больше 5 минут, нарезаем на чанки
             chunks = []
             if total_duration > 300:  # 5 минут
+                logger.info(f"🔪 Видео {total_duration:.1f} сек > 300 сек, нарезаем на чанки")
                 chunks = await self.split_into_chunks(video_path, chunk_duration=300)
+                logger.info(f"📦 Создано чанков: {len(chunks)}")
             else:
+                logger.info(f"📹 Видео {total_duration:.1f} сек <= 300 сек, обрабатываем целиком")
                 chunks = [video_path]
+            
+            # КРИТИЧЕСКАЯ ПРОВЕРКА: убеждаемся что все чанки существуют
+            existing_chunks = []
+            for i, chunk_path in enumerate(chunks):
+                if os.path.exists(chunk_path):
+                    chunk_info = self.video_editor.get_video_info(chunk_path)
+                    existing_chunks.append(chunk_path)
+                    logger.info(f"✅ Чанк {i+1} существует: {chunk_path} ({chunk_info['duration']:.1f} сек)")
+                else:
+                    logger.error(f"❌ Чанк {i+1} НЕ СУЩЕСТВУЕТ: {chunk_path}")
+            
+            logger.info(f"📊 ИТОГО готовых чанков: {len(existing_chunks)}/{len(chunks)}")
+            chunks = existing_chunks
             
             # 3. Обрабатываем каждый чанк
             all_clips = []
+            total_expected_clips = 0
+            
             for i, chunk_path in enumerate(chunks):
-                logger.info(f"Обработка чанка {i+1}/{len(chunks)}")
+                logger.info(f"🎬 НАЧИНАЕМ обработку чанка {i+1}/{len(chunks)}: {chunk_path}")
                 
-                # Генерируем субтитры для чанка
-                subtitles = await self.subtitle_generator.generate(chunk_path)
-                
-                # Нарезаем чанк на клипы
-                clips = await self.video_editor.create_clips(
-                    chunk_path, 
-                    duration, 
-                    subtitles,
-                    start_index=len(all_clips),
-                    config=config
-                )
-                
-                all_clips.extend(clips)
+                try:
+                    # Получаем информацию о чанке
+                    chunk_info = self.video_editor.get_video_info(chunk_path)
+                    chunk_duration = chunk_info['duration']
+                    expected_clips_in_chunk = int(chunk_duration // duration)
+                    total_expected_clips += expected_clips_in_chunk
+                    
+                    logger.info(f"   📏 Длительность чанка: {chunk_duration:.1f} сек")
+                    logger.info(f"   🎯 Ожидается клипов: {expected_clips_in_chunk}")
+                    
+                    # Генерируем субтитры для чанка
+                    logger.info(f"   🎤 Генерируем субтитры...")
+                    subtitles = await self.subtitle_generator.generate(chunk_path)
+                    logger.info(f"   ✅ Субтитры готовы: {len(subtitles)} фраз")
+                    
+                    # Нарезаем чанк на клипы
+                    logger.info(f"   ✂️  Нарезаем на клипы...")
+                    clips = await self.video_editor.create_clips(
+                        chunk_path, 
+                        duration, 
+                        subtitles,
+                        start_index=len(all_clips),
+                        config=config
+                    )
+                    
+                    logger.info(f"   🎉 Создано клипов из чанка {i+1}: {len(clips)}")
+                    all_clips.extend(clips)
+                    
+                except Exception as e:
+                    logger.error(f"❌ ОШИБКА обработки чанка {i+1}: {e}")
+                    continue
                 
                 # Удаляем временный чанк (если это не оригинальный файл)
                 if chunk_path != video_path and os.path.exists(chunk_path):
                     os.remove(chunk_path)
+                    logger.info(f"   🗑️  Удален временный чанк: {chunk_path}")
+            
+            # ФИНАЛЬНАЯ СТАТИСТИКА
+            logger.info(f"🏁 ФИНАЛЬНАЯ СТАТИСТИКА ОБРАБОТКИ:")
+            logger.info(f"   📹 Исходное видео: {total_duration:.1f} сек")
+            logger.info(f"   📦 Обработано чанков: {len(chunks)}")
+            logger.info(f"   🎯 Ожидалось клипов: {total_expected_clips}")
+            logger.info(f"   ✅ Создано клипов: {len(all_clips)}")
+            logger.info(f"   📊 Эффективность: {len(all_clips)/total_expected_clips*100:.1f}%" if total_expected_clips > 0 else "   📊 Эффективность: 0%")
             
             # 4. Ждем завершения записи всех файлов
             import time
@@ -178,6 +223,29 @@ class VideoProcessor:
                     logger.warning(f"❌ Не удалось создать чанк {i}")
             
             logger.info(f"🚀 СУПЕР БЫСТРО создано {len(successful_chunks)}/{num_chunks} чанков")
+            
+            # КРИТИЧЕСКАЯ ДИАГНОСТИКА: проверяем каждый чанк
+            logger.info(f"🔍 ДИАГНОСТИКА СОЗДАННЫХ ЧАНКОВ:")
+            total_chunks_duration = 0
+            for i, chunk_path in enumerate(successful_chunks):
+                try:
+                    if os.path.exists(chunk_path):
+                        chunk_info = self.video_editor.get_video_info(chunk_path)
+                        chunk_duration = chunk_info['duration']
+                        total_chunks_duration += chunk_duration
+                        logger.info(f"   ✅ Чанк {i+1}: {chunk_duration:.1f} сек - {chunk_path}")
+                    else:
+                        logger.error(f"   ❌ Чанк {i+1}: ФАЙЛ НЕ СУЩЕСТВУЕТ - {chunk_path}")
+                except Exception as e:
+                    logger.error(f"   ❌ Чанк {i+1}: ОШИБКА ЧТЕНИЯ - {e}")
+            
+            logger.info(f"📊 ИТОГО длительность чанков: {total_chunks_duration:.1f} сек из {total_duration:.1f} сек")
+            coverage = (total_chunks_duration / total_duration) * 100 if total_duration > 0 else 0
+            logger.info(f"📈 Покрытие видео чанками: {coverage:.1f}%")
+            
+            if coverage < 95:
+                logger.warning(f"⚠️  ПРОБЛЕМА: Чанки покрывают только {coverage:.1f}% исходного видео!")
+            
             return successful_chunks
             
         except Exception as e:
@@ -187,6 +255,8 @@ class VideoProcessor:
     async def _create_chunk_ultra_fast(self, task: dict) -> bool:
         """СУПЕР БЫСТРОЕ создание чанка с таймаутом и fallback"""
         try:
+            logger.info(f"🚀 Начинаем создание чанка {task['index']}: {task['start_time']}-{task['start_time'] + task['duration']} сек")
+            
             loop = asyncio.get_event_loop()
             
             # Добавляем таймаут 60 секунд для каждого чанка
@@ -201,7 +271,15 @@ class VideoProcessor:
                 ),
                 timeout=60.0  # 60 секунд таймаут
             )
-            return True
+            
+            # Проверяем, что файл действительно создался
+            if os.path.exists(task['output_path']):
+                file_size = os.path.getsize(task['output_path'])
+                logger.info(f"✅ Чанк {task['index']} создан успешно: {file_size} байт")
+                return True
+            else:
+                logger.error(f"❌ Чанк {task['index']} НЕ СОЗДАЛСЯ: файл отсутствует")
+                return False
             
         except asyncio.TimeoutError:
             logger.warning(f"⏰ Таймаут создания чанка {task['index']}, пробуем CPU fallback")
@@ -226,7 +304,8 @@ class VideoProcessor:
                 return False
                 
         except Exception as e:
-            logger.error(f"❌ Ошибка создания чанка {task['index']}: {e}")
+            logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА создания чанка {task['index']}: {e}")
+            logger.error(f"   Параметры чанка: start={task['start_time']}, duration={task['duration']}, output={task['output_path']}")
             return False
     
     def _create_chunk_direct_command(self, input_path: str, output_path: str, start_time: int, duration: int):
@@ -267,12 +346,14 @@ class VideoProcessor:
             ]
             logger.info(f"💻 Используем CPU для нарезки чанка")
         
-        # Запускаем команду
+        # Запускаем команду с правильной кодировкой для Windows
         result = subprocess.run(
             cmd, 
             capture_output=True, 
             text=True,
-            check=False  # Не бросаем исключение при ошибке
+            encoding='utf-8',  # Принудительно используем UTF-8
+            errors='ignore',   # Игнорируем ошибки кодировки
+            check=False        # Не бросаем исключение при ошибке
         )
         
         if result.returncode != 0:
@@ -290,12 +371,26 @@ class VideoProcessor:
             import subprocess
             
             # Проверяем наличие NVIDIA GPU
-            result = subprocess.run(['nvidia-smi'], capture_output=True, text=True, check=False)
+            result = subprocess.run(
+                ['nvidia-smi'], 
+                capture_output=True, 
+                text=True, 
+                encoding='utf-8',
+                errors='ignore',
+                check=False
+            )
             if result.returncode != 0:
                 return False
             
             # Проверяем поддержку NVENC в ffmpeg
-            result = subprocess.run(['ffmpeg', '-encoders'], capture_output=True, text=True, check=False)
+            result = subprocess.run(
+                ['ffmpeg', '-encoders'], 
+                capture_output=True, 
+                text=True,
+                encoding='utf-8',
+                errors='ignore',
+                check=False
+            )
             if 'h264_nvenc' in result.stdout:
                 logger.info("✅ GPU поддержка (NVENC) доступна")
                 return True
@@ -322,7 +417,14 @@ class VideoProcessor:
             output_path
         ]
         
-        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        result = subprocess.run(
+            cmd, 
+            capture_output=True, 
+            text=True, 
+            encoding='utf-8',
+            errors='ignore',
+            check=False
+        )
         
         if result.returncode != 0:
             logger.error(f"Ошибка CPU fallback: {result.stderr}")

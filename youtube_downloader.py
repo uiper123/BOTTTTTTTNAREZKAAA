@@ -75,6 +75,12 @@ class YouTubeDownloader:
                 logger.info(f"Найдено видео форматов: {len(video_formats)}")
                 logger.info(f"Найдено аудио форматов: {len(audio_formats)}")
                 
+                # Логируем информацию о языках аудиодорожек
+                for i, af in enumerate(audio_formats[:5]):  # Показываем первые 5
+                    lang = af.get('language', 'неизвестно')
+                    abr = af.get('abr', af.get('tbr', 'неизвестно'))
+                    logger.info(f"Аудио {i+1}: язык={lang}, битрейт={abr}, формат={af.get('ext', 'неизвестно')}")
+                
                 if not video_formats or not audio_formats:
                     logger.warning("Не найдены отдельные видео или аудио потоки, используем комбинированный формат")
                     return self._download_combined_format(url, base_opts, safe_title, title, duration)
@@ -87,11 +93,23 @@ class YouTubeDownloader:
                 
                 best_video = max(video_formats, key=video_quality_key)
                 
-                # Выбираем лучшее качество аудио
+                # Выбираем лучшее качество аудио с приоритетом русского языка
                 def audio_quality_key(x):
                     abr = x.get('abr') or x.get('tbr') or 0
                     ext_bonus = 1 if x.get('ext') == 'm4a' else 0
-                    return (abr, ext_bonus)
+                    
+                    # ПРИОРИТЕТ РУССКОГО ЯЗЫКА
+                    lang = x.get('language', '').lower()
+                    lang_code = x.get('language_preference', 0)
+                    
+                    # Бонус за русский язык
+                    russian_bonus = 0
+                    if 'ru' in lang or 'rus' in lang or lang_code == 1:
+                        russian_bonus = 1000  # Большой бонус за русский
+                    elif lang == '' or lang == 'und':
+                        russian_bonus = 500   # Средний бонус за неопределенный (часто основной)
+                    
+                    return (russian_bonus, abr, ext_bonus)
                 
                 best_audio = max(audio_formats, key=audio_quality_key)
                 
@@ -100,7 +118,8 @@ class YouTubeDownloader:
                            f"{best_video.get('ext')})")
                 logger.info(f"Выбрано аудио: {best_audio.get('format_id')} "
                            f"({best_audio.get('abr', 'unknown')} kbps, "
-                           f"{best_audio.get('ext')})")
+                           f"{best_audio.get('ext')}, "
+                           f"язык: {best_audio.get('language', 'неизвестно')})")
                 
                 # Пути для временных файлов - используем более простые имена
                 video_temp = self.temp_dir / f"video_{best_video.get('format_id')}.{best_video.get('ext', 'mp4')}"

@@ -20,6 +20,7 @@ class TelegramBot:
         self.token = os.getenv('TELEGRAM_BOT_TOKEN')
         self.video_processor = VideoProcessor()
         self.user_settings = {}  # Хранение настроек пользователей
+        self.waiting_for_cookies = set()  # Пользователи, ожидающие ввода cookies
         
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /start"""
@@ -37,6 +38,7 @@ class TelegramBot:
             "/duration <секунды> - Установить длительность шотсов (по умолчанию 30 сек)\n"
             "/title <текст> - Установить заголовок (по умолчанию 'ФРАГМЕНТ')\n"
             "/subtitle <текст> - Установить подзаголовок (по умолчанию 'Часть')\n"
+            "/cookies - Обновить cookies для YouTube\n"
             "/settings - Показать текущие настройки\n"
             "/help - Помощь\n\n"
             "📹 Отправь мне:\n"
@@ -143,6 +145,24 @@ class TelegramBot:
             f"/subtitle <текст>"
         )
     
+    async def set_cookies(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда /cookies для обновления cookies файла"""
+        user_id = update.effective_user.id
+        
+        # Добавляем пользователя в список ожидающих cookies
+        self.waiting_for_cookies.add(user_id)
+        
+        await update.message.reply_text(
+            "🍪 Обновление cookies для YouTube\n\n"
+            "📋 Отправьте содержимое cookies файла следующим сообщением.\n\n"
+            "💡 Как получить cookies:\n"
+            "1. Откройте YouTube в браузере\n"
+            "2. Войдите в аккаунт\n"
+            "3. Используйте расширение для экспорта cookies\n"
+            "4. Скопируйте содержимое и отправьте мне\n\n"
+            "⚠️ Отправьте cookies текстом в следующем сообщении"
+        )
+    
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /help"""
         await update.message.reply_text(
@@ -151,6 +171,7 @@ class TelegramBot:
             "/duration <секунды> - Длительность шотсов (5-300 сек)\n"
             "/title <текст> - Заголовок (например: 'ЭПИЗОД')\n"
             "/subtitle <текст> - Подзаголовок (например: 'Серия')\n"
+            "/cookies - Обновить cookies для YouTube\n"
             "/settings - Показать текущие настройки\n\n"
             "📹 Как использовать:\n"
             "1. Настройте параметры командами выше\n"
@@ -173,6 +194,11 @@ class TelegramBot:
         user_id = update.effective_user.id
         message = update.message
         
+        # Проверяем, ожидает ли пользователь ввода cookies
+        if user_id in self.waiting_for_cookies:
+            await self.process_cookies_input(update, message.text)
+            return
+        
         # Получаем настройки пользователя
         user_config = self.user_settings.get(user_id, {
             'duration': 30,
@@ -191,6 +217,39 @@ class TelegramBot:
         else:
             await update.message.reply_text(
                 "⚠️ Отправьте ссылку на YouTube видео или видео файл"
+            )
+    
+    async def process_cookies_input(self, update: Update, cookies_text: str):
+        """Обработка ввода cookies"""
+        user_id = update.effective_user.id
+        
+        try:
+            if not cookies_text or len(cookies_text.strip()) < 10:
+                await update.message.reply_text(
+                    "⚠️ Cookies слишком короткие. Отправьте полное содержимое cookies файла."
+                )
+                return
+            
+            # Сохраняем cookies в файл
+            with open('cookies.txt', 'w', encoding='utf-8') as f:
+                f.write(cookies_text.strip())
+            
+            # Убираем пользователя из списка ожидающих
+            self.waiting_for_cookies.discard(user_id)
+            
+            await update.message.reply_text(
+                "✅ Cookies успешно обновлены!\n\n"
+                "🎬 Теперь можете отправлять ссылки на YouTube видео.\n"
+                "Бот будет использовать новые cookies для скачивания."
+            )
+            
+            logger.info(f"Cookies обновлены пользователем {user_id}")
+            
+        except Exception as e:
+            logger.error(f"Ошибка сохранения cookies: {e}")
+            self.waiting_for_cookies.discard(user_id)
+            await update.message.reply_text(
+                "❌ Ошибка сохранения cookies. Попробуйте еще раз командой /cookies"
             )
     
     async def process_youtube_url(self, update: Update, url: str, config: dict):
@@ -265,6 +324,7 @@ class TelegramBot:
         application.add_handler(CommandHandler("duration", self.set_duration))
         application.add_handler(CommandHandler("title", self.set_title))
         application.add_handler(CommandHandler("subtitle", self.set_subtitle))
+        application.add_handler(CommandHandler("cookies", self.set_cookies))
         application.add_handler(CommandHandler("settings", self.show_settings))
         application.add_handler(CommandHandler("help", self.help_command))
         application.add_handler(MessageHandler(filters.TEXT | filters.VIDEO, self.handle_message))

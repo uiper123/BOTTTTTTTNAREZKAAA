@@ -81,24 +81,14 @@ class VideoEditor:
             while current_time < total_duration:
                 end_time = current_time + clip_duration
                 
-                # СТРОГИЙ ТАЙМЛАЙН: проверяем, есть ли достаточно времени для полного клипа
+                # СТРОГИЙ ТАЙМЛАЙН: только клипы точной длительности
                 remaining_time = total_duration - current_time
                 
+                # Если оставшееся время меньше заданной длительности - пропускаем
                 if remaining_time < clip_duration:
-                    # Если оставшееся время меньше заданной длительности - пропускаем
                     logger.info(f"Пропущен последний кусок: {remaining_time:.1f} сек < {clip_duration} сек (строгий таймлайн)")
                     skipped_clips += 1
                     break
-                
-                # Проверяем минимальную длительность (не менее 95% от заданной)
-                min_duration = clip_duration * 0.95
-                actual_duration = min(clip_duration, remaining_time)
-                
-                if actual_duration < min_duration:
-                    logger.info(f"Пропущен кусок {clip_index + 1}: {actual_duration:.1f} сек < {min_duration:.1f} сек (строгий таймлайн)")
-                    skipped_clips += 1
-                    current_time += clip_duration
-                    continue
                 
                 clip_path = self.output_dir / f"clip_{clip_index:03d}.mp4"
                 
@@ -122,7 +112,15 @@ class VideoEditor:
                 
                 current_time += clip_duration
             
-            logger.info(f"Создано {len(clips)} клипов, пропущено {skipped_clips} (строгий таймлайн)")
+            # Детальная статистика
+            expected_clips = int(total_duration // clip_duration)
+            logger.info(f"📊 СТАТИСТИКА СОЗДАНИЯ КЛИПОВ:")
+            logger.info(f"   Длительность видео: {total_duration:.1f} сек")
+            logger.info(f"   Ожидалось клипов: {expected_clips}")
+            logger.info(f"   Создано клипов: {len(clips)}")
+            logger.info(f"   Пропущено клипов: {skipped_clips}")
+            logger.info(f"   Эффективность: {len(clips)/expected_clips*100:.1f}%")
+            
             return clips
             
         except Exception as e:
@@ -156,11 +154,12 @@ class VideoEditor:
         main_video = ffmpeg.input(input_path, ss=start_time, t=duration)
         logger.info(f"💻 Используем CPU для создания клипа {clip_number}")
         
-        # Создаем размытый фон (растягиваем на весь экран)
+        # Создаем размытый фон (растягиваем на весь экран) - ВЕРТИКАЛЬНЫЙ ФОРМАТ
         blurred_bg = (
             main_video
             .video
-            .filter('scale', 1080, 1920)  # Вертикальный формат
+            .filter('scale', 1080, 1920, force_original_aspect_ratio='increase')  # Принудительно вертикальный
+            .filter('crop', 1080, 1920)  # Обрезаем до точного размера
             .filter('gblur', sigma=20)
         )
         
@@ -174,10 +173,10 @@ class VideoEditor:
         target_screen_width = 1080
         target_screen_height = 1920
         
-        # УЛУЧШЕННЫЙ АЛГОРИТМ МАСШТАБИРОВАНИЯ ДЛЯ БОЛЬШИХ ВИДЕО
+        # ИСПРАВЛЕННЫЙ АЛГОРИТМ МАСШТАБИРОВАНИЯ
         
         # Определяем доступную область для видео (оставляем место для текста)
-        text_area_height = 520  # Место для заголовков и субтитров
+        text_area_height = 400  # Место для заголовков сверху
         available_width = target_screen_width
         available_height = target_screen_height - text_area_height
         
@@ -188,33 +187,15 @@ class VideoEditor:
         # Для больших видео (4K+) используем более агрессивное масштабирование
         is_large_video = original_width >= 2160 or original_height >= 2160
         
-        if is_large_video:
-            logger.info(f"Обнаружено большое видео: {original_width}x{original_height}")
-            # Для больших видео используем максимально доступную область
-            if original_aspect > available_aspect:
-                # Широкое видео - используем всю ширину
-                target_width = available_width
-                target_height = int(available_width / original_aspect)
-                # Если высота получается слишком маленькой, увеличиваем
-                if target_height < available_height * 0.6:
-                    target_height = int(available_height * 0.8)
-                    target_width = int(target_height * original_aspect)
-            else:
-                # Высокое видео - используем больше высоты
-                target_height = int(available_height * 0.9)
-                target_width = int(target_height * original_aspect)
-                # Если ширина превышает доступную, корректируем
-                if target_width > available_width:
-                    target_width = available_width
-                    target_height = int(available_width / original_aspect)
+        # ЕДИНЫЙ АЛГОРИТМ МАСШТАБИРОВАНИЯ (исправлен)
+        if original_aspect > available_aspect:
+            # Широкое видео - масштабируем по ширине
+            target_width = available_width
+            target_height = int(available_width / original_aspect)
         else:
-            # Для обычных видео используем стандартный алгоритм
-            if original_aspect > available_aspect:
-                target_width = available_width
-                target_height = int(available_width / original_aspect)
-            else:
-                target_height = available_height
-                target_width = int(available_height * original_aspect)
+            # Высокое или квадратное видео - масштабируем по высоте
+            target_height = available_height
+            target_width = int(available_height * original_aspect)
         
         # Убеждаемся, что размеры четные и в разумных пределах
         target_width = min(target_width, available_width)
@@ -223,8 +204,8 @@ class VideoEditor:
         target_height = target_height - (target_height % 2)
         
         # Минимальные размеры для качества
-        min_width = 640   # Увеличили минимальную ширину
-        min_height = 360  # Увеличили минимальную высоту
+        min_width = 800   # Еще больше увеличили минимальную ширину
+        min_height = 450  # Еще больше увеличили минимальную высоту
         
         if target_width < min_width or target_height < min_height:
             logger.info("Применяем минимальные размеры для качества")
@@ -312,7 +293,8 @@ class VideoEditor:
             # Если стандартный - добавляем номер клипа
             subtitle_text = f"{subtitle_template} {clip_number}"
         
-        # Заголовок (сверху)
+        # Заголовок (сверху) - появляется с 8 секунды
+        title_start_time = 8.0  # Заголовки появляются с 8 секунды
         video_with_title = video_with_bg.drawtext(
             text=title_text,
             fontfile=self.font_path if os.path.exists(self.font_path) else None,
@@ -320,10 +302,10 @@ class VideoEditor:
             fontcolor=self.title_color,
             x='(w-text_w)/2',
             y='100',
-            enable=f'between(t,0,{duration})'
+            enable=f'between(t,{title_start_time},{duration})'
         )
         
-        # Подзаголовок (под заголовком)
+        # Подзаголовок (под заголовком) - появляется с 8 секунды
         video_with_subtitle = video_with_title.drawtext(
             text=subtitle_text,
             fontfile=self.font_path if os.path.exists(self.font_path) else None,
@@ -331,7 +313,7 @@ class VideoEditor:
             fontcolor=self.subtitle_color,
             x='(w-text_w)/2',
             y='200',
-            enable=f'between(t,0,{duration})'
+            enable=f'between(t,{title_start_time},{duration})'
         )
         
         # Добавляем субтитры с анимацией
@@ -345,18 +327,20 @@ class VideoEditor:
         # Аудио
         audio = main_video.audio
         
+        # ПРИНУДИТЕЛЬНО добавляем финальное масштабирование до 9:16
+        final_video_scaled = final_video.filter('scale', 1080, 1920, force_original_aspect_ratio='decrease').filter('pad', 1080, 1920, '(ow-iw)/2', '(oh-ih)/2')
+        
         # Финальный вывод с GPU/CPU кодировщиком
         if gpu_available:
             # GPU ускоренный вывод (NVIDIA NVENC)
             (
                 ffmpeg
-                .output(final_video, audio, output_path, 
+                .output(final_video_scaled, audio, output_path, 
                        vcodec='h264_nvenc',    # GPU кодировщик NVIDIA
                        acodec='aac',
                        preset='fast',          # Быстрый пресет для GPU
                        cq=18,                  # Качество для NVENC (аналог CRF)
                        pix_fmt='yuv420p',      # Совместимость
-                       s='1080x1920',          # ПРИНУДИТЕЛЬНО 9:16 формат
                        **{'b:v': '8M',         # Битрейт видео 8 Мбит/с
                           'b:a': '192k',       # Битрейт аудио 192 кбит/с
                           'maxrate': '10M',    # Максимальный битрейт
@@ -364,20 +348,19 @@ class VideoEditor:
                 .overwrite_output()
                 .run(quiet=True)
             )
-            logger.info(f"🎮 Клип {clip_number} создан с GPU ускорением")
+            logger.info(f"🎮 Клип {clip_number} создан с GPU ускорением (1080x1920)")
         else:
             # CPU вывод с улучшенным качеством для больших видео
             if is_large_video:
                 # Для больших видео используем лучшие настройки качества
                 (
                     ffmpeg
-                    .output(final_video, audio, output_path, 
+                    .output(final_video_scaled, audio, output_path, 
                            vcodec='libx264',
                            acodec='aac',
                            preset='medium',        # Лучший баланс скорость/качество
                            crf=20,                 # Высокое качество для больших видео
                            pix_fmt='yuv420p',
-                           s='1080x1920',
                            **{'b:v': '6M',         # Битрейт для качества
                               'b:a': '192k',
                               'maxrate': '8M',
@@ -385,22 +368,21 @@ class VideoEditor:
                     .overwrite_output()
                     .run(quiet=True)
                 )
-                logger.info(f"💻 Большое видео - клип {clip_number} создан с высоким качеством")
+                logger.info(f"💻 Большое видео - клип {clip_number} создан с высоким качеством (1080x1920)")
             else:
                 # Для обычных видео используем быстрые настройки
                 (
                     ffmpeg
-                    .output(final_video, audio, output_path, 
+                    .output(final_video_scaled, audio, output_path, 
                            vcodec='libx264',
                            acodec='aac',
                            preset='fast',          # Быстрый пресет
                            crf=22,                 # Хорошее качество
-                           pix_fmt='yuv420p',
-                           s='1080x1920')
+                           pix_fmt='yuv420p')
                     .overwrite_output()
                     .run(quiet=True)
                 )
-                logger.info(f"💻 Клип {clip_number} создан с CPU")
+                logger.info(f"💻 Клип {clip_number} создан с CPU (1080x1920)")
     
     def _add_animated_subtitles(self, video, subtitles: list, start_time: float, duration: float):
         """Добавление анимированных субтитров"""
