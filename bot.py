@@ -21,6 +21,7 @@ class TelegramBot:
         self.video_processor = VideoProcessor()
         self.user_settings = {}  # Хранение настроек пользователей
         self.waiting_for_cookies = set()  # Пользователи, ожидающие ввода cookies
+        self.waiting_for_token = set()  # Пользователи, ожидающие ввода токена
         
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /start"""
@@ -39,6 +40,7 @@ class TelegramBot:
             "/title <текст> - Установить заголовок (по умолчанию 'ФРАГМЕНТ')\n"
             "/subtitle <текст> - Установить подзаголовок (по умолчанию 'Часть')\n"
             "/cookies - Обновить cookies для YouTube\n"
+            "/token - Обновить Google OAuth токен\n"
             "/settings - Показать текущие настройки\n"
             "/help - Помощь\n\n"
             "📹 Отправь мне:\n"
@@ -163,6 +165,24 @@ class TelegramBot:
             "⚠️ Отправьте cookies текстом в следующем сообщении"
         )
     
+    async def set_token(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда /token для обновления Google OAuth токена"""
+        user_id = update.effective_user.id
+        
+        # Добавляем пользователя в список ожидающих токен
+        self.waiting_for_token.add(user_id)
+        
+        await update.message.reply_text(
+            "🔑 Обновление Google OAuth токена\n\n"
+            "📋 Отправьте новый GOOGLE_OAUTH_TOKEN_BASE64 следующим сообщением.\n\n"
+            "💡 Как получить токен:\n"
+            "1. Получите новый токен из Google Cloud Console\n"
+            "2. Закодируйте его в base64\n"
+            "3. Скопируйте полную строку и отправьте мне\n\n"
+            "⚠️ Отправьте токен текстом в следующем сообщении\n"
+            "🔒 Токен будет сохранен в .env файл"
+        )
+    
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /help"""
         await update.message.reply_text(
@@ -172,6 +192,7 @@ class TelegramBot:
             "/title <текст> - Заголовок (например: 'ЭПИЗОД')\n"
             "/subtitle <текст> - Подзаголовок (например: 'Серия')\n"
             "/cookies - Обновить cookies для YouTube\n"
+            "/token - Обновить Google OAuth токен\n"
             "/settings - Показать текущие настройки\n\n"
             "📹 Как использовать:\n"
             "1. Настройте параметры командами выше\n"
@@ -197,6 +218,11 @@ class TelegramBot:
         # Проверяем, ожидает ли пользователь ввода cookies
         if user_id in self.waiting_for_cookies:
             await self.process_cookies_input(update, message.text)
+            return
+        
+        # Проверяем, ожидает ли пользователь ввода токена
+        if user_id in self.waiting_for_token:
+            await self.process_token_input(update, message.text)
             return
         
         # Получаем настройки пользователя
@@ -250,6 +276,65 @@ class TelegramBot:
             self.waiting_for_cookies.discard(user_id)
             await update.message.reply_text(
                 "❌ Ошибка сохранения cookies. Попробуйте еще раз командой /cookies"
+            )
+    
+    async def process_token_input(self, update: Update, token_text: str):
+        """Обработка ввода Google OAuth токена"""
+        user_id = update.effective_user.id
+        
+        try:
+            if not token_text or len(token_text.strip()) < 50:
+                await update.message.reply_text(
+                    "⚠️ Токен слишком короткий. Отправьте полный GOOGLE_OAUTH_TOKEN_BASE64."
+                )
+                return
+            
+            token = token_text.strip()
+            
+            # Читаем текущий .env файл
+            env_lines = []
+            env_file_path = '.env'
+            
+            if os.path.exists(env_file_path):
+                with open(env_file_path, 'r', encoding='utf-8') as f:
+                    env_lines = f.readlines()
+            
+            # Обновляем или добавляем токен
+            token_updated = False
+            for i, line in enumerate(env_lines):
+                if line.startswith('GOOGLE_OAUTH_TOKEN_BASE64='):
+                    env_lines[i] = f'GOOGLE_OAUTH_TOKEN_BASE64={token}\n'
+                    token_updated = True
+                    break
+            
+            # Если токен не найден, добавляем его
+            if not token_updated:
+                env_lines.append(f'GOOGLE_OAUTH_TOKEN_BASE64={token}\n')
+            
+            # Сохраняем обновленный .env файл
+            with open(env_file_path, 'w', encoding='utf-8') as f:
+                f.writelines(env_lines)
+            
+            # Перезагружаем переменные окружения
+            load_dotenv(override=True)
+            
+            # Убираем пользователя из списка ожидающих
+            self.waiting_for_token.discard(user_id)
+            
+            await update.message.reply_text(
+                "✅ Google OAuth токен успешно обновлен!\n\n"
+                "🔑 Токен сохранен в .env файл\n"
+                "🔄 Переменные окружения перезагружены\n\n"
+                "📁 Теперь бот может загружать файлы на Google Drive с новым токеном."
+            )
+            
+            logger.info(f"Google OAuth токен обновлен пользователем {user_id}")
+            
+        except Exception as e:
+            logger.error(f"Ошибка сохранения токена: {e}")
+            self.waiting_for_token.discard(user_id)
+            await update.message.reply_text(
+                "❌ Ошибка сохранения токена. Попробуйте еще раз командой /token"
             )
     
     async def process_youtube_url(self, update: Update, url: str, config: dict):
@@ -325,6 +410,7 @@ class TelegramBot:
         application.add_handler(CommandHandler("title", self.set_title))
         application.add_handler(CommandHandler("subtitle", self.set_subtitle))
         application.add_handler(CommandHandler("cookies", self.set_cookies))
+        application.add_handler(CommandHandler("token", self.set_token))
         application.add_handler(CommandHandler("settings", self.show_settings))
         application.add_handler(CommandHandler("help", self.help_command))
         application.add_handler(MessageHandler(filters.TEXT | filters.VIDEO, self.handle_message))
