@@ -163,7 +163,7 @@ class VideoEditor:
             .filter('gblur', sigma=20)
         )
         
-        # Основное видео по центру - улучшенное масштабирование
+        # Основное видео по центру - МАКСИМАЛЬНОЕ масштабирование с обрезкой
         # Получаем информацию об исходном видео
         video_info = self.get_video_info(input_path)
         original_width = video_info['width']
@@ -173,76 +173,47 @@ class VideoEditor:
         target_screen_width = 1080
         target_screen_height = 1920
         
-        # ИСПРАВЛЕННЫЙ АЛГОРИТМ МАСШТАБИРОВАНИЯ
-        
-        # Определяем доступную область для видео (оставляем место для текста)
-        text_area_height = 400  # Место для заголовков сверху
-        available_width = target_screen_width
-        available_height = target_screen_height - text_area_height
+        # КРУПНОЕ ЦЕНТРАЛЬНОЕ ВИДЕО: заполняем большую часть экрана с обрезкой
         
         # Вычисляем соотношения сторон
         original_aspect = original_width / original_height
-        available_aspect = available_width / available_height
+        target_aspect = target_screen_width / target_screen_height  # 9:16 = 0.5625
         
         # Для больших видео (4K+) используем более агрессивное масштабирование
         is_large_video = original_width >= 2160 or original_height >= 2160
         
-        # ЕДИНЫЙ АЛГОРИТМ МАСШТАБИРОВАНИЯ (исправлен)
-        if original_aspect > available_aspect:
-            # Широкое видео - масштабируем по ширине
-            target_width = available_width
-            target_height = int(available_width / original_aspect)
-        else:
-            # Высокое или квадратное видео - масштабируем по высоте
-            target_height = available_height
-            target_width = int(available_height * original_aspect)
+        # АГРЕССИВНОЕ МАСШТАБИРОВАНИЕ: основное видео занимает 80% высоты экрана
+        # Это сделает его очень крупным, с обрезкой по бокам если нужно
+        center_video_height = int(target_screen_height * 0.8)  # 80% высоты экрана (1536px)
         
-        # Убеждаемся, что размеры четные и в разумных пределах
-        target_width = min(target_width, available_width)
-        target_height = min(target_height, available_height)
+        if original_aspect > target_aspect:
+            # Широкое видео - масштабируем по ВЫСОТЕ для максимального размера
+            target_height = center_video_height
+            target_width = int(target_height * original_aspect)
+            
+            # Если ширина больше экрана - пусть обрезается, как вы просили
+            crop_needed = target_width > target_screen_width
+            if crop_needed:
+                crop_width = target_screen_width
+                crop_height = target_height
+                logger.info(f"Широкое видео: {target_width}x{target_height} -> обрезка до {crop_width}x{crop_height}")
+            else:
+                logger.info(f"Широкое видео: {target_width}x{target_height} (помещается)")
+                
+        else:
+            # Высокое или квадратное видео - тоже масштабируем по высоте
+            target_height = center_video_height
+            target_width = int(target_height * original_aspect)
+            crop_needed = False
+            logger.info(f"Высокое видео: {target_width}x{target_height}")
+        
+        # Убеждаемся, что размеры четные
         target_width = target_width - (target_width % 2)
         target_height = target_height - (target_height % 2)
         
-        # Минимальные размеры для качества
-        min_width = 800   # Еще больше увеличили минимальную ширину
-        min_height = 450  # Еще больше увеличили минимальную высоту
-        
-        if target_width < min_width or target_height < min_height:
-            logger.info("Применяем минимальные размеры для качества")
-            if original_aspect > 1:  # Широкое видео
-                target_width = min_width
-                target_height = int(min_width / original_aspect)
-                if target_height < min_height:
-                    target_height = min_height
-                    target_width = int(min_height * original_aspect)
-            else:  # Высокое видео
-                target_height = min_height
-                target_width = int(min_height * original_aspect)
-                if target_width < min_width:
-                    target_width = min_width
-                    target_height = int(min_width / original_aspect)
-            
-            # Снова проверяем четность
-            target_width = target_width - (target_width % 2)
-            target_height = target_height - (target_height % 2)
-        
-        # Финальная проверка
-        if target_width <= 0 or target_height <= 0:
-            logger.warning("Неправильные размеры, используем безопасные значения")
-            target_width = 854   # Увеличили безопасные размеры
-            target_height = 480  # 16:9 соотношение
-            target_width = target_width - (target_width % 2)
-            target_height = target_height - (target_height % 2)
-        
         logger.info(f"Исходное видео: {original_width}x{original_height} (соотношение: {original_aspect:.2f})")
-        logger.info(f"Доступная область: {available_width}x{available_height} (соотношение: {available_aspect:.2f})")
-        
-        if original_aspect > available_aspect:
-            logger.info("Масштабирование по ширине (видео широкое)")
-        else:
-            logger.info("Масштабирование по высоте (видео высокое)")
-            
-        logger.info(f"Масштабирование: {original_width}x{original_height} -> {target_width}x{target_height}")
+        logger.info(f"Целевой экран: {target_screen_width}x{target_screen_height}")
+        logger.info(f"КРУПНОЕ видео: {target_width}x{target_height} (займет 80% высоты экрана)")
         
         # Используем улучшенное масштабирование для больших видео
         if is_large_video:
@@ -261,6 +232,11 @@ class VideoEditor:
                 .video
                 .filter('scale', target_width, target_height)
             )
+        
+        # Если нужна обрезка по бокам - применяем crop фильтр
+        if crop_needed:
+            main_scaled = main_scaled.filter('crop', crop_width, crop_height, 
+                                           x='(iw-ow)/2', y='(ih-oh)/2')  # Обрезаем по центру
         
         # Накладываем основное видео на размытый фон
         video_with_bg = ffmpeg.filter([blurred_bg, main_scaled], 'overlay', 
@@ -293,8 +269,9 @@ class VideoEditor:
             # Если стандартный - добавляем номер клипа
             subtitle_text = f"{subtitle_template} {clip_number}"
         
-        # Заголовок (сверху) - появляется с 8 секунды
+        # Заголовок (сверху) - появляется с 8 секунды БЕЗ анимации для стабильности
         title_start_time = 8.0  # Заголовки появляются с 8 секунды
+        
         video_with_title = video_with_bg.drawtext(
             text=title_text,
             fontfile=self.font_path if os.path.exists(self.font_path) else None,
