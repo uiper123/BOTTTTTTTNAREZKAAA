@@ -8,12 +8,33 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 class YouTubeDownloader:
+    """
+    Универсальный загрузчик видео с поддержкой множества платформ через yt-dlp:
+    - YouTube
+    - Rutube (все типы: видео, каналы, плейлисты, фильмы)
+    - VK Video
+    - Twitch
+    - И многие другие (более 1000 сайтов)
+    """
     def __init__(self):
         self.temp_dir = Path("temp")
         self.temp_dir.mkdir(exist_ok=True)
     
     async def download(self, url: str, use_cookies: bool = False) -> dict:
-        """Скачивание видео с YouTube - раздельно видео и аудио с объединением"""
+        """
+        Скачивание видео с поддерживаемых платформ - раздельно видео и аудио с объединением
+        
+        Поддерживаемые платформы включают:
+        - YouTube (youtube.com, youtu.be)
+        - Rutube (rutube.ru) - видео, каналы, плейлисты, фильмы
+        - VK Video
+        - Twitch
+        - И более 1000 других сайтов
+        
+        Args:
+            url: URL видео с любой поддерживаемой платформы
+            use_cookies: Использовать cookies для авторизации
+        """
         try:
             # Запускаем скачивание в отдельном потоке
             loop = asyncio.get_event_loop()
@@ -315,7 +336,7 @@ class YouTubeDownloader:
             return {'success': False, 'error': str(e)}
     
     def download_with_cookies(self, url: str, cookies_file: str = 'cookies.txt') -> dict:
-        """Скачивание с использованием cookies"""
+        """Скачивание с использованием cookies для различных платформ"""
         if not os.path.exists(cookies_file):
             logger.warning(f"Файл cookies не найден: {cookies_file}")
             return self.download(url, use_cookies=False)
@@ -328,12 +349,31 @@ class YouTubeDownloader:
                     logger.info("Cookies файл пустой, скачиваем без cookies")
                     return self.download(url, use_cookies=False)
                 
-                # Проверяем наличие YouTube cookies
-                if 'youtube.com' in content or 'google.com' in content:
-                    logger.info("Найдены YouTube cookies, используем их для скачивания")
+                # Определяем платформу по URL и проверяем соответствующие cookies
+                url_lower = url.lower()
+                platform_detected = False
+                
+                if 'youtube.com' in url_lower or 'youtu.be' in url_lower:
+                    if 'youtube.com' in content or 'google.com' in content:
+                        logger.info("Найдены YouTube cookies, используем их для скачивания")
+                        platform_detected = True
+                elif 'rutube.ru' in url_lower:
+                    if 'rutube.ru' in content:
+                        logger.info("Найдены Rutube cookies, используем их для скачивания")
+                        platform_detected = True
+                elif 'vk.com' in url_lower or 'vk.ru' in url_lower:
+                    if 'vk.com' in content or 'vk.ru' in content:
+                        logger.info("Найдены VK cookies, используем их для скачивания")
+                        platform_detected = True
+                elif 'twitch.tv' in url_lower:
+                    if 'twitch.tv' in content:
+                        logger.info("Найдены Twitch cookies, используем их для скачивания")
+                        platform_detected = True
+                
+                if platform_detected:
                     return self.download(url, use_cookies=True)
                 else:
-                    logger.warning("YouTube cookies не найдены в файле")
+                    logger.info("Соответствующие cookies не найдены, скачиваем без cookies")
                     return self.download(url, use_cookies=False)
                     
         except Exception as e:
