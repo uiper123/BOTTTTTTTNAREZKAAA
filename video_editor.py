@@ -67,6 +67,79 @@ class VideoEditor:
             .run(quiet=True)
         )
     
+    async def create_clips_parallel(self, video_path: str, clip_duration: int, subtitles: list, start_index: int = 0, config: dict = None, max_parallel: int = 4) -> list:
+        """ПАРАЛЛЕЛЬНОЕ создание клипов с максимальным использованием GPU"""
+        try:
+            video_info = self.get_video_info(video_path)
+            total_duration = video_info['duration']
+            
+            # Планируем все клипы заранее
+            clip_tasks = []
+            current_time = 0
+            clip_index = start_index
+            
+            while current_time < total_duration:
+                remaining_time = total_duration - current_time
+                
+                # Если оставшееся время меньше заданной длительности - пропускаем
+                if remaining_time < clip_duration:
+                    logger.info(f"Пропущен последний кусок: {remaining_time:.1f} сек < {clip_duration} сек")
+                    break
+                
+                clip_path = self.output_dir / f"clip_{clip_index:03d}.mp4"
+                
+                # Добавляем задачу в список
+                clip_tasks.append({
+                    'input_path': video_path,
+                    'output_path': str(clip_path),
+                    'start_time': current_time,
+                    'duration': clip_duration,
+                    'subtitles': subtitles,
+                    'clip_number': clip_index + 1,
+                    'config': config
+                })
+                
+                current_time += clip_duration
+                clip_index += 1
+            
+            logger.info(f"🚀 ПАРАЛЛЕЛЬНАЯ ОБРАБОТКА: {len(clip_tasks)} клипов, макс. параллельно: {max_parallel}")
+            
+            # Обрабатываем клипы пакетами для максимального использования GPU
+            clips = []
+            semaphore = asyncio.Semaphore(max_parallel)  # Ограничиваем количество параллельных задач
+            
+            async def process_clip_task(task):
+                async with semaphore:
+                    success = await self.create_styled_clip(
+                        task['input_path'],
+                        task['output_path'],
+                        task['start_time'],
+                        task['duration'],
+                        task['subtitles'],
+                        task['clip_number'],
+                        task['config']
+                    )
+                    if success:
+                        return task['output_path']
+                    return None
+            
+            # Запускаем все задачи параллельно
+            results = await asyncio.gather(*[process_clip_task(task) for task in clip_tasks], return_exceptions=True)
+            
+            # Собираем успешные результаты
+            for result in results:
+                if isinstance(result, str):  # Успешный результат
+                    clips.append(result)
+                elif isinstance(result, Exception):
+                    logger.error(f"Ошибка создания клипа: {result}")
+            
+            logger.info(f"✅ ПАРАЛЛЕЛЬНО создано {len(clips)}/{len(clip_tasks)} клипов")
+            return clips
+            
+        except Exception as e:
+            logger.error(f"Ошибка параллельного создания клипов: {e}")
+            return []
+
     async def create_clips(self, video_path: str, clip_duration: int, subtitles: list, start_index: int = 0, config: dict = None) -> list:
         """Создание клипов из видео со строгим таймлайном"""
         try:
@@ -315,13 +388,19 @@ class VideoEditor:
                 .output(final_video_scaled, audio, output_path, 
                        vcodec='h264_nvenc',    # GPU кодировщик NVIDIA
                        acodec='aac',
-                       preset='fast',          # Быстрый пресет для GPU
-                       cq=18,                  # Качество для NVENC (аналог CRF)
+                       preset='p1',            # Самый быстрый пресет для NVENC
+                       tune='hq',              # Высокое качество
+                       rc='vbr',               # Переменный битрейт
+                       cq=18,                  # Более высокое качество для Tesla T4
                        pix_fmt='yuv420p',      # Совместимость
-                       **{'b:v': '8M',         # Битрейт видео 8 Мбит/с
-                          'b:a': '192k',       # Битрейт аудио 192 кбит/с
-                          'maxrate': '10M',    # Максимальный битрейт
-                          'bufsize': '16M'})   # Размер буфера
+                       gpu=0,                  # Используем первый GPU
+                       **{'b:v': '8M',         # Увеличенный битрейт для Tesla T4
+                          'b:a': '128k',       # Битрейт аудио 128 кбит/с
+                          'maxrate': '12M',    # Увеличенный максимальный битрейт
+                          'bufsize': '16M',    # Увеличенный размер буфера для Tesla T4
+                          'threads': '0',      # Автоматическое определение потоков
+                          'bf': '3',           # B-кадры для лучшего сжатия
+                          'refs': '3'})        # Референсные кадры
                 .overwrite_output()
                 .run(quiet=True)
             )
@@ -405,8 +484,25 @@ class VideoEditor:
         return result_video
     
     def _check_gpu_support(self) -> bool:
-        """Проверка поддержки GPU для ffmpeg - ОТКЛЮЧЕНО ДЛЯ COLAB"""
-        # В Google Colab GPU поддержка часто вызывает проблемы с ffmpeg
-        # Принудительно отключаем для стабильности
-        logger.info("❌ GPU поддержка принудительно отключена для Colab")
-        return False
+        """Проверка поддержки GPU для ffmpeg"""
+        try:
+            import subprocess
+            
+            # Проверяем доступность NVENC (NVIDIA GPU кодировщик)
+            result = subprocess.run(
+                ['ffmpeg', '-hide_banner', '-encoders'], 
+                capture_output=True, 
+                text=True, 
+                timeout=10
+            )
+            
+            if 'h264_nvenc' in result.stdout:
+                logger.info("✅ GPU поддержка (NVENC) доступна для ffmpeg")
+                return True
+            else:
+                logger.info("❌ GPU поддержка недоступна, используем CPU")
+                return False
+                
+        except Exception as e:
+            logger.warning(f"Ошибка проверки GPU: {e}, используем CPU")
+            return False

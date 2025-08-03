@@ -7,6 +7,7 @@ from youtube_downloader import YouTubeDownloader
 from video_editor import VideoEditor
 from subtitle_generator import SubtitleGenerator
 from google_drive_uploader import GoogleDriveUploader
+from gpu_monitor import GPUMonitor
 
 logger = logging.getLogger(__name__)
 
@@ -49,118 +50,131 @@ class VideoProcessor:
             return {'success': False, 'error': str(e)}
     
     async def process_video_file(self, video_path: str, config: dict) -> dict:
-        """Обработка видео файла"""
+        """Обработка видео файла с мониторингом GPU"""
         try:
             duration = config.get('duration', 30)
             
-            # 1. Получаем информацию о видео
-            video_info = self.video_editor.get_video_info(video_path)
-            total_duration = video_info['duration']
+            # Запускаем мониторинг GPU
+            gpu_monitor = GPUMonitor()
+            monitor_task = asyncio.create_task(gpu_monitor.start_monitoring(interval=1.0))
             
-            logger.info(f"Обработка видео длительностью {total_duration} секунд")
-            
-            # 2. Если видео больше 5 минут, нарезаем на чанки
-            chunks = []
-            if total_duration > 300:  # 5 минут
-                logger.info(f"🔪 Видео {total_duration:.1f} сек > 300 сек, нарезаем на чанки")
-                chunks = await self.split_into_chunks(video_path, chunk_duration=300)
-                logger.info(f"📦 Создано чанков: {len(chunks)}")
-            else:
-                logger.info(f"📹 Видео {total_duration:.1f} сек <= 300 сек, обрабатываем целиком")
-                chunks = [video_path]
-            
-            # КРИТИЧЕСКАЯ ПРОВЕРКА: убеждаемся что все чанки существуют
-            existing_chunks = []
-            for i, chunk_path in enumerate(chunks):
-                if os.path.exists(chunk_path):
-                    chunk_info = self.video_editor.get_video_info(chunk_path)
-                    existing_chunks.append(chunk_path)
-                    logger.info(f"✅ Чанк {i+1} существует: {chunk_path} ({chunk_info['duration']:.1f} сек)")
+            try:
+                # 1. Получаем информацию о видео
+                video_info = self.video_editor.get_video_info(video_path)
+                total_duration = video_info['duration']
+                
+                logger.info(f"🎮 Обработка видео длительностью {total_duration} секунд с мониторингом GPU")
+                
+                # 2. Если видео больше 5 минут, нарезаем на чанки
+                chunks = []
+                if total_duration > 300:  # 5 минут
+                    logger.info(f"🔪 Видео {total_duration:.1f} сек > 300 сек, нарезаем на чанки")
+                    chunks = await self.split_into_chunks(video_path, chunk_duration=300)
+                    logger.info(f"📦 Создано чанков: {len(chunks)}")
                 else:
-                    logger.error(f"❌ Чанк {i+1} НЕ СУЩЕСТВУЕТ: {chunk_path}")
+                    logger.info(f"📹 Видео {total_duration:.1f} сек <= 300 сек, обрабатываем целиком")
+                    chunks = [video_path]
             
-            logger.info(f"📊 ИТОГО готовых чанков: {len(existing_chunks)}/{len(chunks)}")
-            chunks = existing_chunks
-            
-            # 3. Обрабатываем каждый чанк
-            all_clips = []
-            total_expected_clips = 0
-            
-            for i, chunk_path in enumerate(chunks):
-                logger.info(f"🎬 НАЧИНАЕМ обработку чанка {i+1}/{len(chunks)}: {chunk_path}")
+                # КРИТИЧЕСКАЯ ПРОВЕРКА: убеждаемся что все чанки существуют
+                existing_chunks = []
+                for i, chunk_path in enumerate(chunks):
+                    if os.path.exists(chunk_path):
+                        chunk_info = self.video_editor.get_video_info(chunk_path)
+                        existing_chunks.append(chunk_path)
+                        logger.info(f"✅ Чанк {i+1} существует: {chunk_path} ({chunk_info['duration']:.1f} сек)")
+                    else:
+                        logger.error(f"❌ Чанк {i+1} НЕ СУЩЕСТВУЕТ: {chunk_path}")
                 
-                try:
-                    # Получаем информацию о чанке
-                    chunk_info = self.video_editor.get_video_info(chunk_path)
-                    chunk_duration = chunk_info['duration']
-                    expected_clips_in_chunk = int(chunk_duration // duration)
-                    total_expected_clips += expected_clips_in_chunk
-                    
-                    logger.info(f"   📏 Длительность чанка: {chunk_duration:.1f} сек")
-                    logger.info(f"   🎯 Ожидается клипов: {expected_clips_in_chunk}")
-                    
-                    # Генерируем субтитры для чанка
-                    logger.info(f"   🎤 Генерируем субтитры...")
-                    subtitles = await self.subtitle_generator.generate(chunk_path)
-                    logger.info(f"   ✅ Субтитры готовы: {len(subtitles)} фраз")
-                    
-                    # Нарезаем чанк на клипы
-                    logger.info(f"   ✂️  Нарезаем на клипы...")
-                    clips = await self.video_editor.create_clips(
-                        chunk_path, 
-                        duration, 
-                        subtitles,
-                        start_index=len(all_clips),
-                        config=config
-                    )
-                    
-                    logger.info(f"   🎉 Создано клипов из чанка {i+1}: {len(clips)}")
-                    all_clips.extend(clips)
-                    
-                except Exception as e:
-                    logger.error(f"❌ ОШИБКА обработки чанка {i+1}: {e}")
-                    continue
+                logger.info(f"📊 ИТОГО готовых чанков: {len(existing_chunks)}/{len(chunks)}")
+                chunks = existing_chunks
                 
-                # Удаляем временный чанк (если это не оригинальный файл)
-                if chunk_path != video_path and os.path.exists(chunk_path):
-                    os.remove(chunk_path)
-                    logger.info(f"   🗑️  Удален временный чанк: {chunk_path}")
-            
-            # ФИНАЛЬНАЯ СТАТИСТИКА
-            logger.info(f"🏁 ФИНАЛЬНАЯ СТАТИСТИКА ОБРАБОТКИ:")
-            logger.info(f"   📹 Исходное видео: {total_duration:.1f} сек")
-            logger.info(f"   📦 Обработано чанков: {len(chunks)}")
-            logger.info(f"   🎯 Ожидалось клипов: {total_expected_clips}")
-            logger.info(f"   ✅ Создано клипов: {len(all_clips)}")
-            logger.info(f"   📊 Эффективность: {len(all_clips)/total_expected_clips*100:.1f}%" if total_expected_clips > 0 else "   📊 Эффективность: 0%")
-            
-            # 4. Ждем завершения записи всех файлов
-            import time
-            logger.info("Ожидание завершения записи файлов...")
-            time.sleep(3)  # Даем время на завершение записи
-            
-            # 5. Загружаем все клипы на Google Drive
-            logger.info(f"Загрузка {len(all_clips)} клипов на Google Drive")
-            upload_results = await self.drive_uploader.upload_clips(all_clips)
-            
-            # 5. Создаем файл со ссылками
-            links_file = await self.create_links_file(upload_results)
-            
-            # 6. Очищаем временные файлы ТОЛЬКО после успешной загрузки
-            successful_uploads = sum(1 for r in upload_results if r.get('success', False))
-            if successful_uploads > 0:
-                logger.info(f"Успешно загружено {successful_uploads}/{len(all_clips)} клипов, очищаем файлы")
-                # Удаляем только успешно загруженные файлы
-                self.cleanup_successful_files(all_clips, upload_results)
-            else:
-                logger.warning("Ни один клип не был загружен, файлы сохранены для повторной попытки")
-            
-            return {
-                'success': True,
-                'total_clips': len(all_clips),
-                'links_file': links_file,
-                'upload_results': upload_results
-            }
+                # 3. Обрабатываем каждый чанк
+                all_clips = []
+                total_expected_clips = 0
+                
+                for i, chunk_path in enumerate(chunks):
+                    logger.info(f"🎬 НАЧИНАЕМ обработку чанка {i+1}/{len(chunks)}: {chunk_path}")
+                    
+                    try:
+                        # Получаем информацию о чанке
+                        chunk_info = self.video_editor.get_video_info(chunk_path)
+                        chunk_duration = chunk_info['duration']
+                        expected_clips_in_chunk = int(chunk_duration // duration)
+                        total_expected_clips += expected_clips_in_chunk
+                        
+                        logger.info(f"   📏 Длительность чанка: {chunk_duration:.1f} сек")
+                        logger.info(f"   🎯 Ожидается клипов: {expected_clips_in_chunk}")
+                        
+                        # Генерируем субтитры для чанка
+                        logger.info(f"   🎤 Генерируем субтитры...")
+                        subtitles = await self.subtitle_generator.generate(chunk_path)
+                        logger.info(f"   ✅ Субтитры готовы: {len(subtitles)} фраз")
+                        
+                        # Нарезаем чанк на клипы
+                        logger.info(f"   ✂️  Нарезаем на клипы...")
+                        # Используем МАКСИМАЛЬНУЮ параллельную обработку для Tesla T4
+                        clips = await self.video_editor.create_clips_parallel(
+                            chunk_path, 
+                            duration, 
+                            subtitles,
+                            start_index=len(all_clips),
+                            config=config,
+                            max_parallel=32  # МАКСИМАЛЬНАЯ параллельность для Tesla T4 (15GB памяти)
+                        )
+                        
+                        logger.info(f"   🎉 Создано клипов из чанка {i+1}: {len(clips)}")
+                        all_clips.extend(clips)
+                        
+                    except Exception as e:
+                        logger.error(f"❌ ОШИБКА обработки чанка {i+1}: {e}")
+                        continue
+                    
+                    # Удаляем временный чанк (если это не оригинальный файл)
+                    if chunk_path != video_path and os.path.exists(chunk_path):
+                        os.remove(chunk_path)
+                        logger.info(f"   🗑️  Удален временный чанк: {chunk_path}")
+                
+                # ФИНАЛЬНАЯ СТАТИСТИКА
+                logger.info(f"🏁 ФИНАЛЬНАЯ СТАТИСТИКА ОБРАБОТКИ:")
+                logger.info(f"   📹 Исходное видео: {total_duration:.1f} сек")
+                logger.info(f"   📦 Обработано чанков: {len(chunks)}")
+                logger.info(f"   🎯 Ожидалось клипов: {total_expected_clips}")
+                logger.info(f"   ✅ Создано клипов: {len(all_clips)}")
+                logger.info(f"   📊 Эффективность: {len(all_clips)/total_expected_clips*100:.1f}%" if total_expected_clips > 0 else "   📊 Эффективность: 0%")
+                
+                # 4. Ждем завершения записи всех файлов
+                import time
+                logger.info("Ожидание завершения записи файлов...")
+                time.sleep(3)  # Даем время на завершение записи
+                
+                # 5. Загружаем все клипы на Google Drive
+                logger.info(f"Загрузка {len(all_clips)} клипов на Google Drive")
+                upload_results = await self.drive_uploader.upload_clips(all_clips)
+                
+                # 5. Создаем файл со ссылками
+                links_file = await self.create_links_file(upload_results)
+                
+                # 6. Очищаем временные файлы ТОЛЬКО после успешной загрузки
+                successful_uploads = sum(1 for r in upload_results if r.get('success', False))
+                if successful_uploads > 0:
+                    logger.info(f"Успешно загружено {successful_uploads}/{len(all_clips)} клипов, очищаем файлы")
+                    # Удаляем только успешно загруженные файлы
+                    self.cleanup_successful_files(all_clips, upload_results)
+                else:
+                    logger.warning("Ни один клип не был загружен, файлы сохранены для повторной попытки")
+                
+                return {
+                    'success': True,
+                    'total_clips': len(all_clips),
+                    'links_file': links_file,
+                    'upload_results': upload_results
+                }
+                
+            finally:
+                # Останавливаем мониторинг GPU
+                gpu_monitor.stop_monitoring()
+                await monitor_task
+                gpu_monitor.print_summary()
             
         except Exception as e:
             logger.error(f"Ошибка обработки видео: {e}")
@@ -326,7 +340,17 @@ class VideoProcessor:
                 '-t', str(duration),          # Длительность
                 '-c:v', 'h264_nvenc',         # GPU кодировщик NVIDIA
                 '-c:a', 'copy',               # Аудио копируем
-                '-preset', 'fast',            # Быстрый пресет
+                '-preset', 'p1',              # Самый быстрый пресет для NVENC
+                '-tune', 'hq',                # Высокое качество
+                '-rc', 'vbr',                 # Переменный битрейт
+                '-cq', '20',                  # Более высокое качество для Tesla T4
+                '-b:v', '8M',                 # Увеличенный битрейт для Tesla T4
+                '-maxrate', '12M',            # Увеличенный максимальный битрейт
+                '-bufsize', '16M',            # Увеличенный размер буфера для Tesla T4
+                '-gpu', '0',                  # Используем первый GPU
+                '-threads', '0',              # Автоматическое определение потоков
+                '-bf', '3',                   # B-кадры для лучшего сжатия
+                '-refs', '3'                  # Референсные кадры
                 '-avoid_negative_ts', 'make_zero',
                 '-y',                         # Перезаписывать без вопросов
                 output_path

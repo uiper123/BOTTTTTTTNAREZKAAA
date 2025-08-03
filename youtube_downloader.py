@@ -54,13 +54,40 @@ class YouTubeDownloader:
     def _download_separate_and_merge(self, url: str, use_cookies: bool = False) -> dict:
         """Скачивание видео и аудио отдельно с последующим объединением"""
         try:
-            # Базовые настройки для yt-dlp
+            # Базовые настройки для yt-dlp с обходом блокировок
             base_opts = {
                 'noplaylist': True,
                 'extract_flat': False,
                 'writesubtitles': False,
                 'writeautomaticsub': False,
                 'ignoreerrors': False,
+                # Обход блокировок YouTube - более агрессивные настройки
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': ['android', 'web', 'ios', 'mweb'],
+                        'player_skip': ['webpage', 'configs'],
+                        'skip': ['hls', 'dash'],
+                        'innertube_host': 'studio.youtube.com',
+                        'innertube_key': 'AIzaSyBUPetSUmoZL-OhlxA7wSac5XinrygCqMo'
+                    }
+                },
+                # Дополнительные заголовки для обхода блокировок
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'Accept-Language': 'en-us,en;q=0.5',
+                    'Accept-Encoding': 'gzip,deflate',
+                    'Accept-Charset': 'ISO-8859-1,utf-8;q=0.7,*;q=0.7',
+                    'Keep-Alive': '300',
+                    'Connection': 'keep-alive',
+                },
+                # Настройки для обхода ограничений
+                'sleep_interval': 1,
+                'max_sleep_interval': 5,
+                'sleep_interval_requests': 1,
+                'retries': 5,
+                'fragment_retries': 5,
+                'skip_unavailable_fragments': True,
             }
             
             # Добавляем cookies если нужно
@@ -103,7 +130,12 @@ class YouTubeDownloader:
                     logger.info(f"Аудио {i+1}: язык={lang}, битрейт={abr}, формат={af.get('ext', 'неизвестно')}")
                 
                 if not video_formats or not audio_formats:
-                    logger.warning("Не найдены отдельные видео или аудио потоки, используем комбинированный формат")
+                    logger.warning("Не найдены отдельные видео или аудио потоки, пробуем альтернативные методы")
+                    # Сначала пробуем альтернативные методы
+                    alt_result = self._try_alternative_methods(url, safe_title, title, duration)
+                    if alt_result['success']:
+                        return alt_result
+                    # Если альтернативные методы не сработали, пробуем комбинированный формат
                     return self._download_combined_format(url, base_opts, safe_title, title, duration)
                 
                 # Выбираем лучшее качество видео (приоритет HD)
@@ -280,9 +312,132 @@ class YouTubeDownloader:
                 }
                 
         except Exception as e:
-            logger.error(f"Ошибка скачивания и объединения: {e}")
+            logger.error(f"Ошибка основного метода скачивания: {e}")
+            
+            # Если основной метод не сработал, пробуем альтернативные методы
+            try:
+                # Получаем базовую информацию о видео для альтернативных методов
+                with yt_dlp.YoutubeDL({'noplaylist': True}) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                    title = info.get('title', 'video')
+                    duration = info.get('duration', 0)
+                    safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).rstrip()[:50]
+                
+                logger.info("Основной метод не сработал, пробуем альтернативные...")
+                alt_result = self._try_alternative_methods(url, safe_title, title, duration)
+                if alt_result['success']:
+                    return alt_result
+                    
+            except Exception as e2:
+                logger.error(f"Альтернативные методы тоже не сработали: {e2}")
+            
             return {'success': False, 'error': str(e)}
     
+    def _try_alternative_methods(self, url: str, safe_title: str, title: str, duration: int) -> dict:
+        """Альтернативные методы скачивания для проблемных видео"""
+        logger.info("Пробуем альтернативные методы скачивания...")
+        
+        # Метод 1: Только Android клиент
+        android_opts = {
+            'noplaylist': True,
+            'extract_flat': False,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android'],
+                    'player_skip': ['webpage'],
+                }
+            },
+            'format': 'best[ext=mp4]/best',
+            'outtmpl': str(self.temp_dir / f"{safe_title}_android.%(ext)s"),
+            'http_headers': {
+                'User-Agent': 'com.google.android.youtube/17.36.4 (Linux; U; Android 12; GB) gzip',
+            },
+        }
+        
+        try:
+            logger.info("Пробуем Android клиент...")
+            with yt_dlp.YoutubeDL(android_opts) as ydl:
+                ydl.download([url])
+            
+            video_files = list(self.temp_dir.glob(f"{safe_title}_android.*"))
+            if video_files:
+                return {
+                    'success': True,
+                    'video_path': str(video_files[0]),
+                    'title': title,
+                    'duration': duration
+                }
+        except Exception as e:
+            logger.warning(f"Android клиент не сработал: {e}")
+        
+        # Метод 2: iOS клиент
+        ios_opts = {
+            'noplaylist': True,
+            'extract_flat': False,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['ios'],
+                    'player_skip': ['webpage'],
+                }
+            },
+            'format': 'best[ext=mp4]/best',
+            'outtmpl': str(self.temp_dir / f"{safe_title}_ios.%(ext)s"),
+            'http_headers': {
+                'User-Agent': 'com.google.ios.youtube/17.36.4 (iPhone14,3; U; CPU iOS 15_6 like Mac OS X)',
+            },
+        }
+        
+        try:
+            logger.info("Пробуем iOS клиент...")
+            with yt_dlp.YoutubeDL(ios_opts) as ydl:
+                ydl.download([url])
+            
+            video_files = list(self.temp_dir.glob(f"{safe_title}_ios.*"))
+            if video_files:
+                return {
+                    'success': True,
+                    'video_path': str(video_files[0]),
+                    'title': title,
+                    'duration': duration
+                }
+        except Exception as e:
+            logger.warning(f"iOS клиент не сработал: {e}")
+        
+        # Метод 3: Embed метод
+        embed_opts = {
+            'noplaylist': True,
+            'extract_flat': False,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['web'],
+                    'player_skip': ['configs'],
+                }
+            },
+            'format': 'worst[ext=mp4]/worst',  # Берем худшее качество, но рабочее
+            'outtmpl': str(self.temp_dir / f"{safe_title}_embed.%(ext)s"),
+        }
+        
+        # Пробуем embed URL
+        embed_url = url.replace('watch?v=', 'embed/').replace('youtu.be/', 'youtube.com/embed/')
+        
+        try:
+            logger.info("Пробуем embed метод...")
+            with yt_dlp.YoutubeDL(embed_opts) as ydl:
+                ydl.download([embed_url])
+            
+            video_files = list(self.temp_dir.glob(f"{safe_title}_embed.*"))
+            if video_files:
+                return {
+                    'success': True,
+                    'video_path': str(video_files[0]),
+                    'title': title,
+                    'duration': duration
+                }
+        except Exception as e:
+            logger.warning(f"Embed метод не сработал: {e}")
+        
+        return {'success': False, 'error': 'Все альтернативные методы не сработали'}
+
     def _download_combined_format(self, url: str, base_opts: dict, safe_title: str, title: str, duration: int) -> dict:
         """Fallback метод для скачивания комбинированного формата"""
         try:
