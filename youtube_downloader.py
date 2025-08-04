@@ -138,18 +138,60 @@ class YouTubeDownloader:
                     # Если альтернативные методы не сработали, пробуем комбинированный формат
                     return self._download_combined_format(url, base_opts, safe_title, title, duration)
                 
-                # Выбираем лучшее качество видео (приоритет HD)
+                # Выбираем лучшее качество видео (приоритет 4K/1440p/1080p)
                 def video_quality_key(x):
                     height = x.get('height') or 0
+                    width = x.get('width') or 0
                     tbr = x.get('tbr') or 0
-                    return (height, tbr)
+                    fps = x.get('fps') or 30
+                    vcodec = x.get('vcodec', '')
+                    
+                    # Бонус за высокое разрешение
+                    resolution_bonus = height * width
+                    
+                    # Бонус за высокий битрейт
+                    bitrate_bonus = tbr * 10
+                    
+                    # Бонус за высокий FPS (60fps лучше 30fps)
+                    fps_bonus = fps * 100
+                    
+                    # Бонус за лучшие кодеки
+                    codec_bonus = 0
+                    if 'vp9' in vcodec.lower():
+                        codec_bonus = 50000  # VP9 - лучший кодек
+                    elif 'h264' in vcodec.lower() or 'avc' in vcodec.lower():
+                        codec_bonus = 30000  # H.264 - хороший кодек
+                    
+                    return (resolution_bonus + bitrate_bonus + fps_bonus + codec_bonus, height, tbr)
                 
                 best_video = max(video_formats, key=video_quality_key)
                 
                 # Выбираем лучшее качество аудио с приоритетом русского языка
                 def audio_quality_key(x):
                     abr = x.get('abr') or x.get('tbr') or 0
-                    ext_bonus = 1 if x.get('ext') == 'm4a' else 0
+                    acodec = x.get('acodec', '').lower()
+                    ext = x.get('ext', '').lower()
+                    
+                    # Бонус за высокий битрейт (приоритет качеству)
+                    bitrate_bonus = abr * 100
+                    
+                    # Бонус за лучшие аудио кодеки
+                    codec_bonus = 0
+                    if 'opus' in acodec:
+                        codec_bonus = 10000  # Opus - лучший кодек для качества
+                    elif 'aac' in acodec:
+                        codec_bonus = 8000   # AAC - хороший кодек
+                    elif 'mp3' in acodec:
+                        codec_bonus = 5000   # MP3 - стандартный
+                    
+                    # Бонус за лучшие форматы контейнеров
+                    format_bonus = 0
+                    if ext == 'm4a':
+                        format_bonus = 1000  # M4A - лучший контейнер для AAC
+                    elif ext == 'webm':
+                        format_bonus = 800   # WebM - хорош для Opus
+                    elif ext == 'mp3':
+                        format_bonus = 500   # MP3 - стандартный
                     
                     # ПРИОРИТЕТ РУССКОГО ЯЗЫКА
                     lang = x.get('language', '').lower()
@@ -158,21 +200,28 @@ class YouTubeDownloader:
                     # Бонус за русский язык
                     russian_bonus = 0
                     if 'ru' in lang or 'rus' in lang or lang_code == 1:
-                        russian_bonus = 1000  # Большой бонус за русский
+                        russian_bonus = 100000  # МАКСИМАЛЬНЫЙ бонус за русский
                     elif lang == '' or lang == 'und':
-                        russian_bonus = 500   # Средний бонус за неопределенный (часто основной)
+                        russian_bonus = 50000   # Средний бонус за неопределенный (часто основной)
                     
-                    return (russian_bonus, abr, ext_bonus)
+                    return (russian_bonus + bitrate_bonus + codec_bonus + format_bonus, abr, codec_bonus)
                 
                 best_audio = max(audio_formats, key=audio_quality_key)
                 
-                logger.info(f"Выбрано видео: {best_video.get('format_id')} "
-                           f"({best_video.get('width')}x{best_video.get('height')}, "
-                           f"{best_video.get('ext')})")
-                logger.info(f"Выбрано аудио: {best_audio.get('format_id')} "
-                           f"({best_audio.get('abr', 'unknown')} kbps, "
-                           f"{best_audio.get('ext')}, "
-                           f"язык: {best_audio.get('language', 'неизвестно')})")
+                logger.info(f"🎥 ВЫБРАНО ВИДЕО МАКСИМАЛЬНОГО КАЧЕСТВА:")
+                logger.info(f"   📺 Формат: {best_video.get('format_id')}")
+                logger.info(f"   📐 Разрешение: {best_video.get('width')}x{best_video.get('height')} ({best_video.get('height')}p)")
+                logger.info(f"   🎞️  FPS: {best_video.get('fps', 'неизвестно')}")
+                logger.info(f"   💾 Битрейт: {best_video.get('tbr', 'неизвестно')} kbps")
+                logger.info(f"   🔧 Кодек: {best_video.get('vcodec', 'неизвестно')}")
+                logger.info(f"   📦 Контейнер: {best_video.get('ext')}")
+                
+                logger.info(f"🎵 ВЫБРАНО АУДИО МАКСИМАЛЬНОГО КАЧЕСТВА:")
+                logger.info(f"   🎤 Формат: {best_audio.get('format_id')}")
+                logger.info(f"   🔊 Битрейт: {best_audio.get('abr', 'неизвестно')} kbps")
+                logger.info(f"   🔧 Кодек: {best_audio.get('acodec', 'неизвестно')}")
+                logger.info(f"   📦 Контейнер: {best_audio.get('ext')}")
+                logger.info(f"   🌍 Язык: {best_audio.get('language', 'неизвестно')}")
                 
                 # Пути для временных файлов - используем более простые имена
                 video_temp = self.temp_dir / f"video_{best_video.get('format_id')}.{best_video.get('ext', 'mp4')}"
@@ -447,20 +496,28 @@ class YouTubeDownloader:
             combined_opts = base_opts.copy()
             combined_opts.update({
                 'format': (
-                    # Сначала пробуем лучшие HD форматы
-                    'best[height>=720][height<=1080][ext=mp4]/'
-                    'best[height>=720][height<=1080]/'
-                    # Затем любые HD
-                    'best[height>=720]/'
-                    # SD форматы
-                    'best[height>=480][ext=mp4]/'
-                    'best[height>=480]/'
-                    # Любые доступные
-                    'best[ext=mp4]/'
-                    'best'
+                    # МАКСИМАЛЬНОЕ КАЧЕСТВО: сначала пробуем 4K и выше
+                    'best[height>=2160][ext=mp4]/best[height>=2160]/'
+                    # Затем 1440p (2K)
+                    'best[height>=1440][height<2160][ext=mp4]/best[height>=1440][height<2160]/'
+                    # Затем 1080p Full HD
+                    'best[height>=1080][height<1440][ext=mp4]/best[height>=1080][height<1440]/'
+                    # 720p HD
+                    'best[height>=720][height<1080][ext=mp4]/best[height>=720][height<1080]/'
+                    # SD форматы как fallback
+                    'best[height>=480][ext=mp4]/best[height>=480]/'
+                    # Любые доступные с приоритетом MP4
+                    'best[ext=mp4]/best'
                 ),
                 'outtmpl': str(self.temp_dir / f"{safe_title}.%(ext)s"),
                 'merge_output_format': 'mp4',
+                # Дополнительные настройки качества
+                'writesubtitles': False,  # Не скачиваем субтитры для скорости
+                'writeautomaticsub': False,
+                'postprocessors': [{
+                    'key': 'FFmpegVideoConvertor',
+                    'preferedformat': 'mp4',
+                }],
             })
             
             logger.info("Скачивание комбинированного формата...")
