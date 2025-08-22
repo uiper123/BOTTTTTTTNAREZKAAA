@@ -220,253 +220,133 @@ class VideoEditor:
                                duration: float, subtitles: list, clip_number: int, config: dict = None):
         """Синхронное создание стилизованного клипа с GPU ускорением"""
         
-        # Проверяем доступность GPU
         gpu_available = self._check_gpu_support()
-        
-        # Всегда используем CPU ввод для стабильности в Colab
-        main_video = ffmpeg.input(input_path, ss=start_time, t=duration)
-        logger.info(f"💻 Используем CPU для создания клипа {clip_number}")
-        
-        # Создаем размытый фон (растягиваем на весь экран) - ВЕРТИКАЛЬНЫЙ ФОРМАТ
-        blurred_bg = (
-            main_video
-            .video
-            .filter('scale', 1080, 1920, force_original_aspect_ratio='increase')  # Принудительно вертикальный
-            .filter('crop', 1080, 1920)  # Обрезаем до точного размера
-            .filter('gblur', sigma=20)
-        )
-        
-        # Основное видео по центру - МАКСИМАЛЬНОЕ масштабирование с обрезкой
-        # Получаем информацию об исходном видео
         video_info = self.get_video_info(input_path)
         original_width = video_info['width']
         original_height = video_info['height']
         original_fps = video_info['fps']
-        
-        logger.info(f"🎬 ОБРАБОТКА ВИДЕО МАКСИМАЛЬНОГО КАЧЕСТВА:")
+        is_large_video = original_width >= 2160 or original_height >= 2160
+
+        # --- Общая логика для GPU и CPU ---
+        logger.info(f"🎬 ОБРАБОТКА КЛИПА {clip_number}:")
         logger.info(f"   📐 Исходное разрешение: {original_width}x{original_height} ({original_height}p)")
         logger.info(f"   🎞️  FPS: {original_fps}")
         logger.info(f"   🎯 Целевое разрешение: 1080x1920 (вертикальный формат)")
-        
-        # Определяем тип качества исходного видео
+
         quality_type = "SD"
-        if original_height >= 2160:
-            quality_type = "4K Ultra HD"
-        elif original_height >= 1440:
-            quality_type = "2K/1440p"
-        elif original_height >= 1080:
-            quality_type = "Full HD 1080p"
-        elif original_height >= 720:
-            quality_type = "HD 720p"
-        
+        if original_height >= 2160: quality_type = "4K Ultra HD"
+        elif original_height >= 1440: quality_type = "2K/1440p"
+        elif original_height >= 1080: quality_type = "Full HD 1080p"
+        elif original_height >= 720: quality_type = "HD 720p"
         logger.info(f"   🏆 Качество исходного видео: {quality_type}")
-        
-        # Целевые размеры для вертикального формата (9:16)
+
         target_screen_width = 1080
         target_screen_height = 1920
-        
-        # КРУПНОЕ ЦЕНТРАЛЬНОЕ ВИДЕО: заполняем большую часть экрана с обрезкой
-        
-        # Вычисляем соотношения сторон
         original_aspect = original_width / original_height
-        target_aspect = target_screen_width / target_screen_height  # 9:16 = 0.5625
+        target_aspect = target_screen_width / target_screen_height
+        center_video_height = int(target_screen_height * 0.8)
         
-        # Для больших видео (4K+) используем более агрессивное масштабирование
-        is_large_video = original_width >= 2160 or original_height >= 2160
-        
-        # АГРЕССИВНОЕ МАСШТАБИРОВАНИЕ: основное видео занимает 80% высоты экрана
-        # Это сделает его очень крупным, с обрезкой по бокам если нужно
-        center_video_height = int(target_screen_height * 0.8)  # 80% высоты экрана (1536px)
-        
+        crop_needed = False
         if original_aspect > target_aspect:
-            # Широкое видео - масштабируем по ВЫСОТЕ для максимального размера
             target_height = center_video_height
             target_width = int(target_height * original_aspect)
-            
-            # Если ширина больше экрана - пусть обрезается, как вы просили
             crop_needed = target_width > target_screen_width
             if crop_needed:
                 crop_width = target_screen_width
                 crop_height = target_height
-                logger.info(f"Широкое видео: {target_width}x{target_height} -> обрезка до {crop_width}x{crop_height}")
-            else:
-                logger.info(f"Широкое видео: {target_width}x{target_height} (помещается)")
-                
         else:
-            # Высокое или квадратное видео - тоже масштабируем по высоте
             target_height = center_video_height
             target_width = int(target_height * original_aspect)
-            crop_needed = False
-            logger.info(f"Высокое видео: {target_width}x{target_height}")
         
-        # Убеждаемся, что размеры четные
-        target_width = target_width - (target_width % 2)
-        target_height = target_height - (target_height % 2)
-        
-        logger.info(f"Исходное видео: {original_width}x{original_height} (соотношение: {original_aspect:.2f})")
-        logger.info(f"Целевой экран: {target_screen_width}x{target_screen_height}")
-        logger.info(f"КРУПНОЕ видео: {target_width}x{target_height} (займет 80% высоты экрана)")
-        
-        # Используем улучшенное масштабирование для больших видео
-        if is_large_video:
-            # Для больших видео используем высококачественный алгоритм масштабирования
-            main_scaled = (
-                main_video
-                .video
-                .filter('scale', target_width, target_height, 
-                       flags='lanczos')  # Высококачественный алгоритм
+        target_width -= target_width % 2
+        target_height -= target_height % 2
+
+        # --- Выбор пайплайна: GPU или CPU ---
+        if gpu_available:
+            logger.info(f"   🚀 Используем GPU-ускоренный пайплайн")
+            input_kwargs = {'ss': start_time, 't': duration, 'c:v': 'h264_cuvid'}
+            main_video = ffmpeg.input(input_path, **input_kwargs)
+            
+            # Пайплайн для размытого фона на GPU
+            blurred_bg = (
+                main_video.video
+                .filter('scale_npp', 1080, 1920, force_original_aspect_ratio='increase', interp_algo='bicubic')
+                .filter('crop', 1080, 1920)
+                .filter('gblur', sigma=20) # gblur будет на CPU, ffmpeg-python обработает
             )
-            logger.info(f"Используется Lanczos масштабирование для большого видео")
+
+            # Пайплайн для основного видео на GPU
+            main_scaled = (
+                main_video.video
+                .filter('scale_npp', target_width, target_height, interp_algo='lanczos' if is_large_video else 'bicubic')
+            )
+            if crop_needed:
+                main_scaled = main_scaled.filter('crop', crop_width, crop_height, x='(iw-ow)/2', y='(ih-oh)/2')
+            
+            # Наложение. ffmpeg-python должен сам разобраться с hwdownload/hwupload
+            video_with_bg = ffmpeg.filter([blurred_bg, main_scaled], 'overlay', x='(W-w)/2', y='(H-h)/2')
+
         else:
-            # Для обычных видео используем стандартное масштабирование
-            main_scaled = (
-                main_video
-                .video
-                .filter('scale', target_width, target_height)
+            logger.info(f"   💻 Используем CPU-пайплайн")
+            main_video = ffmpeg.input(input_path, ss=start_time, t=duration)
+            
+            blurred_bg = (
+                main_video.video
+                .filter('scale', 1080, 1920, force_original_aspect_ratio='increase')
+                .filter('crop', 1080, 1920)
+                .filter('gblur', sigma=20)
             )
-        
-        # Если нужна обрезка по бокам - применяем crop фильтр
-        if crop_needed:
-            main_scaled = main_scaled.filter('crop', crop_width, crop_height, 
-                                           x='(iw-ow)/2', y='(ih-oh)/2')  # Обрезаем по центру
-        
-        # Накладываем основное видео на размытый фон
-        video_with_bg = ffmpeg.filter([blurred_bg, main_scaled], 'overlay', 
-                                    x='(W-w)/2', y='(H-h)/2')
-        
-        # Получаем пользовательские заголовки из config
+            
+            main_scaled = main_video.video.filter('scale', target_width, target_height, flags='lanczos' if is_large_video else 'bicubic')
+            if crop_needed:
+                main_scaled = main_scaled.filter('crop', crop_width, crop_height, x='(iw-ow)/2', y='(ih-oh)/2')
+
+            video_with_bg = ffmpeg.filter([blurred_bg, main_scaled], 'overlay', x='(W-w)/2', y='(H-h)/2')
+
+        # --- Общая часть для рендеринга текста и субтитров (на CPU) ---
         if config:
             title_template = config.get('title', 'ФРАГМЕНТ')
             subtitle_template = config.get('subtitle', 'Часть')
             custom_title = config.get('custom_title', False)
             custom_subtitle = config.get('custom_subtitle', False)
         else:
-            title_template = 'ФРАГМЕНТ'
-            subtitle_template = 'Часть'
-            custom_title = False
-            custom_subtitle = False
+            title_template, subtitle_template, custom_title, custom_subtitle = 'ФРАГМЕНТ', 'Часть', False, False
+
+        title_text = title_template if custom_title else f"{title_template} {clip_number}"
+        subtitle_text = subtitle_template if custom_subtitle else f"{subtitle_template} {clip_number}"
         
-        # Формируем заголовки
-        if custom_title:
-            # Если заголовок пользовательский - не добавляем цифру
-            title_text = title_template
-        else:
-            # Если стандартный - добавляем номер клипа
-            title_text = f"{title_template} {clip_number}"
-            
-        if custom_subtitle:
-            # Если подзаголовок пользовательский - не добавляем цифру
-            subtitle_text = subtitle_template
-        else:
-            # Если стандартный - добавляем номер клипа
-            subtitle_text = f"{subtitle_template} {clip_number}"
-        
-        # Заголовок (сверху) - появляется с 8 секунды БЕЗ анимации для стабильности
-        title_start_time = 8.0  # Заголовки появляются с 8 секунды
-        
-        video_with_title = video_with_bg.drawtext(
-            text=title_text,
-            fontfile=self.font_path if os.path.exists(self.font_path) else None,
-            fontsize=60,
-            fontcolor=self.title_color,
-            x='(w-text_w)/2',
-            y='100',
-            enable=f'between(t,{title_start_time},{duration})'
+        title_start_time = 8.0
+        video_with_text = video_with_bg.drawtext(
+            text=title_text, fontfile=self.font_path, fontsize=60, fontcolor=self.title_color,
+            x='(w-text_w)/2', y='100', enable=f'between(t,{title_start_time},{duration})'
+        ).drawtext(
+            text=subtitle_text, fontfile=self.font_path, fontsize=80, fontcolor=self.subtitle_color,
+            x='(w-text_w)/2', y='200', enable=f'between(t,{title_start_time},{duration})'
         )
         
-        # Подзаголовок (под заголовком) - появляется с 8 секунды
-        video_with_subtitle = video_with_title.drawtext(
-            text=subtitle_text,
-            fontfile=self.font_path if os.path.exists(self.font_path) else None,
-            fontsize=80,  # Больше заголовка
-            fontcolor=self.subtitle_color,
-            x='(w-text_w)/2',
-            y='200',
-            enable=f'between(t,{title_start_time},{duration})'
-        )
-        
-        # Добавляем субтитры с анимацией
-        final_video = self._add_animated_subtitles(
-            video_with_subtitle, 
-            subtitles, 
-            start_time, 
-            duration
-        )
-        
-        # Аудио
+        final_video = self._add_animated_subtitles(video_with_text, subtitles, start_time, duration)
         audio = main_video.audio
         
-        # ПРИНУДИТЕЛЬНО добавляем финальное масштабирование до 9:16
-        final_video_scaled = final_video.filter('scale', 1080, 1920, force_original_aspect_ratio='decrease').filter('pad', 1080, 1920, '(ow-iw)/2', '(oh-ih)/2')
-        
-        # Финальный вывод с GPU/CPU кодировщиком
+        # Финальное масштабирование и вывод
         if gpu_available:
-            # GPU ускоренный вывод (NVIDIA NVENC) - МАКСИМАЛЬНОЕ КАЧЕСТВО
-            (
-                ffmpeg
-                .output(final_video_scaled, audio, output_path, 
-                       vcodec='h264_nvenc',    # GPU кодировщик NVIDIA
-                       acodec='aac',
-                       preset='p4',            # Более качественный пресет (p1=fastest, p7=slowest)
-                       tune='hq',              # Высокое качество
-                       rc='vbr',               # Переменный битрейт для лучшего качества
-                       cq=16,                  # МАКСИМАЛЬНОЕ качество (меньше = лучше, 16-18 отлично)
-                       pix_fmt='yuv420p',      # Совместимость
-                       gpu=0,                  # Используем первый GPU
-                       **{'b:v': '12M',        # УВЕЛИЧЕННЫЙ битрейт для максимального качества
-                          'b:a': '192k',       # Высокий битрейт аудио 192 кбит/с
-                          'maxrate': '18M',    # Максимальный битрейт для пиков
-                          'bufsize': '24M',    # Большой буфер для стабильности
-                          'threads': '0',      # Автоматическое определение потоков
-                          'bf': '4',           # Больше B-кадров для лучшего сжатия
-                          'refs': '4',         # Больше референсных кадров
-                          'profile:v': 'high', # Высокий профиль H.264
-                          'level': '4.1'})     # Уровень для Full HD
-                .overwrite_output()
-                .run(quiet=True)
-            )
-            logger.info(f"🎮 Клип {clip_number} создан с GPU ускорением МАКСИМАЛЬНОГО КАЧЕСТВА (1080x1920)")
+            final_video_scaled = final_video.filter('hwupload_cuda').filter('scale_npp', 1080, 1920)
+            output_params = {
+                'vcodec': 'h264_nvenc', 'acodec': 'aac', 'preset': 'p4', 'tune': 'hq', 'rc': 'vbr',
+                'cq': 16, 'pix_fmt': 'yuv420p', 'gpu': 0, 'b:v': '12M', 'b:a': '192k',
+                'maxrate': '18M', 'bufsize': '24M', 'threads': '0', 'bf': '4', 'refs': '4',
+                'profile:v': 'high', 'level': '4.1'
+            }
+            ffmpeg.output(final_video_scaled, audio, output_path, **output_params).overwrite_output().run(quiet=True)
+            logger.info(f"   ✅ Клип {clip_number} создан с GPU ускорением (1080x1920)")
         else:
-            # CPU вывод с улучшенным качеством для больших видео
-            if is_large_video:
-                # Для больших видео используем лучшие настройки качества
-                (
-                    ffmpeg
-                    .output(final_video_scaled, audio, output_path, 
-                           vcodec='libx264',
-                           acodec='aac',
-                           preset='medium',        # Лучший баланс скорость/качество
-                           crf=20,                 # Высокое качество для больших видео
-                           pix_fmt='yuv420p',
-                           **{'b:v': '6M',         # Битрейт для качества
-                              'b:a': '192k',
-                              'maxrate': '8M',
-                              'bufsize': '12M'})
-                    .overwrite_output()
-                    .run(quiet=True)
-                )
-                logger.info(f"💻 Большое видео - клип {clip_number} создан с высоким качеством (1080x1920)")
-            else:
-                # Для обычных видео используем УЛУЧШЕННЫЕ настройки качества
-                (
-                    ffmpeg
-                    .output(final_video_scaled, audio, output_path, 
-                           vcodec='libx264',
-                           acodec='aac',
-                           preset='medium',        # Лучший баланс скорость/качество
-                           crf=20,                 # ВЫСОКОЕ качество (18-20 отлично)
-                           pix_fmt='yuv420p',
-                           profile='high',         # Высокий профиль H.264
-                           level='4.1',           # Уровень для Full HD
-                           **{'b:a': '192k',       # Высокий битрейт аудио
-                              'maxrate': '10M',    # Максимальный битрейт
-                              'bufsize': '15M',    # Размер буфера
-                              'bf': '3',           # B-кадры для лучшего сжатия
-                              'refs': '3'})        # Референсные кадры
-                    .overwrite_output()
-                    .run(quiet=True)
-                )
-                logger.info(f"💻 Клип {clip_number} создан с CPU ВЫСОКОГО КАЧЕСТВА (1080x1920)")
+            final_video_scaled = final_video.filter('scale', 1080, 1920)
+            output_params = {
+                'vcodec': 'libx264', 'acodec': 'aac', 'preset': 'medium', 'crf': 20,
+                'pix_fmt': 'yuv420p', 'profile': 'high', 'level': '4.1', 'b:a': '192k',
+                'maxrate': '10M', 'bufsize': '15M', 'bf': '3', 'refs': '3'
+            }
+            ffmpeg.output(final_video_scaled, audio, output_path, **output_params).overwrite_output().run(quiet=True)
+            logger.info(f"   ✅ Клип {clip_number} создан с CPU (1080x1920)")
     
     def _add_animated_subtitles(self, video, subtitles: list, start_time: float, duration: float):
         """Добавление анимированных субтитров"""
